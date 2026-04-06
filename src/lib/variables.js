@@ -1,25 +1,22 @@
 /**
- * Xyron Rose Manager - Dynamic Variable Handler
- * Handles text variable replacement and number formatting
+ * ═══════════════════════════════════════════════════
+ *  Xyron Rose Manager - Dynamic Variable Handler
+ *  Handles text replacement and number formatting
+ * ═══════════════════════════════════════════════════
  */
 
 /**
  * Replaces dynamic variables in welcome/goodbye text
- * @param {string} text - The template text with variables
- * @param {object} params - Object containing replacement values
- * @param {string} params.mention - The @mention tag for the user
- * @param {string} params.shownumber - The user's phone number in display format
- * @param {number} params.membercount - Current group member count
- * @param {string} params.groupname - The group's subject/name
- * @returns {string} - The processed text with variables replaced
+ * @param {string} text - Template text with {variables}
+ * @param {object} params - Replacement values
+ * @returns {string} - Processed text
  */
 function replaceVariables(text, params = {}) {
     if (!text || typeof text !== 'string') return '';
 
     const now = new Date();
 
-    // Bengali month names for nicer date formatting
-    const options_time = {
+    const timeOptions = {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -27,19 +24,17 @@ function replaceVariables(text, params = {}) {
         timeZone: 'Asia/Dhaka'
     };
 
-    const options_date = {
+    const dateOptions = {
         year: 'numeric',
         month: 'long',
         day: 'numeric',
         timeZone: 'Asia/Dhaka'
     };
 
-    const currentTime = now.toLocaleString('bn-BD', options_time);
-    const currentDate = now.toLocaleString('bn-BD', options_date);
+    const currentTime = now.toLocaleString('en-US', timeOptions);
+    const currentDate = now.toLocaleString('en-US', dateOptions);
 
     let result = text;
-
-    // Replace all supported variables
     result = result.replace(/{mention}/gi, params.mention || '@user');
     result = result.replace(/{shownumber}/gi, params.shownumber || 'N/A');
     result = result.replace(/{membercount}/gi, params.membercount !== undefined ? String(params.membercount) : '0');
@@ -51,34 +46,35 @@ function replaceVariables(text, params = {}) {
 }
 
 /**
- * Converts a local BD number or international number to WhatsApp JID format
- * If 11-digit BD number (01XXXXXXXXX) -> 8801XXXXXXXXX@s.whatsapp.net
- * If already has country code or is a full JID, handle accordingly
- * @param {string} input - The phone number string
- * @returns {string} - WhatsApp JID
+ * Converts phone number to WhatsApp JID
+ * 11-digit BD number (01XXXXXXXXX) -> 8801XXXXXXXXX@s.whatsapp.net
+ * @param {string} input - Phone number or partial JID
+ * @returns {string|null} - WhatsApp JID or null
  */
 function numberToJid(input) {
     if (!input || typeof input !== 'string') return null;
 
-    // Remove all non-digit characters
-    let cleaned = input.replace(/[^0-9]/g, '');
-
-    // Remove trailing @s.whatsapp.net if someone passed a partial jid
+    // If already a full JID, return as-is
     if (input.includes('@s.whatsapp.net')) {
         return input.trim();
     }
 
-    // If it's an 11-digit BD number starting with 0
+    // Remove everything except digits
+    let cleaned = input.replace(/[^0-9]/g, '');
+
+    if (cleaned.length === 0) return null;
+
+    // 11-digit BD number starting with 0 -> prepend 88
     if (cleaned.length === 11 && cleaned.startsWith('0')) {
         cleaned = '88' + cleaned;
     }
 
-    // If it's a 13-digit number starting with 88
-    if (cleaned.length === 13 && cleaned.startsWith('88')) {
-        return cleaned + '@s.whatsapp.net';
+    // 10-digit BD number without leading 0 -> prepend 880
+    if (cleaned.length === 10 && cleaned.startsWith('1')) {
+        cleaned = '880' + cleaned;
     }
 
-    // For any other international number, just append the suffix
+    // Must be at least 10 digits to be a valid number
     if (cleaned.length >= 10) {
         return cleaned + '@s.whatsapp.net';
     }
@@ -87,21 +83,32 @@ function numberToJid(input) {
 }
 
 /**
- * Extracts a displayable number from a JID
- * e.g., 8801912345678@s.whatsapp.net -> 8801912345678
+ * Extracts display number from a JID
  * @param {string} jid - WhatsApp JID
- * @returns {string} - Display number
+ * @returns {string} - Clean number string
  */
 function jidToNumber(jid) {
-    if (!jid || typeof jid !== 'string') return 'N/A';
-    return jid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+    if (!jid || typeof jid !== 'string') return 'unknown';
+    return jid.split('@')[0].split(':')[0];
 }
 
 /**
- * Parses a time string like "10m", "1h", "1d" into milliseconds
- * Supports: s (seconds), m (minutes), h (hours), d (days)
+ * Normalizes a JID by removing the device suffix (:XX)
+ * So 88019XXXXX:25@s.whatsapp.net becomes 88019XXXXX@s.whatsapp.net
+ * @param {string} jid
+ * @returns {string}
+ */
+function normalizeJid(jid) {
+    if (!jid || typeof jid !== 'string') return '';
+    const [user, server] = jid.split('@');
+    const cleanUser = user.split(':')[0];
+    return server ? `${cleanUser}@${server}` : cleanUser;
+}
+
+/**
+ * Parses time strings like "10m", "1h", "1d" into milliseconds
  * @param {string} timeStr - Time string
- * @returns {number|null} - Duration in milliseconds, or null if invalid
+ * @returns {number|null} - Milliseconds or null if invalid
  */
 function parseTimeString(timeStr) {
     if (!timeStr || typeof timeStr !== 'string') return null;
@@ -111,6 +118,8 @@ function parseTimeString(timeStr) {
 
     const value = parseInt(match[1]);
     const unit = match[2].toLowerCase();
+
+    if (value <= 0) return null;
 
     switch (unit) {
         case 's': return value * 1000;
@@ -125,5 +134,6 @@ module.exports = {
     replaceVariables,
     numberToJid,
     jidToNumber,
+    normalizeJid,
     parseTimeString
 };
