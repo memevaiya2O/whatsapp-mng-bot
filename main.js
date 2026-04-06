@@ -1,5 +1,3 @@
-
-
 require('dotenv').config();
 
 const {
@@ -25,7 +23,6 @@ const {
     parseTimeString
 } = require('./src/lib/variables');
 
-// ═══ PATHS & CONSTANTS ═══════════════════════════════════════
 const AUTH_DIR = '/tmp/auth_info';
 const DB_DIR = path.join(__dirname, 'src', 'database');
 const GROUPS_DB = path.join(DB_DIR, 'groups.json');
@@ -35,7 +32,6 @@ const ADMINS_DB = path.join(DB_DIR, 'admins.json');
 const BOT_NUMBER = process.env.BOT_NUMBER || '';
 const PORT = process.env.PORT || 3000;
 
-// ═══ LOGGING SYSTEM ══════════════════════════════════════════
 const logs = [];
 let pairingCode = null;
 let connectionStatus = 'disconnected';
@@ -48,7 +44,6 @@ function addLog(message) {
     console.log(entry);
 }
 
-// ═══ EXPRESS WEB PANEL ═══════════════════════════════════════
 const app = express();
 
 app.get('/', (req, res) => {
@@ -59,7 +54,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Xyron Rose Manager - Control Panel</title>
+        <title>Xyron Rose Manager</title>
         <style>
             *{margin:0;padding:0;box-sizing:border-box}
             body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;padding:20px}
@@ -68,9 +63,7 @@ app.get('/', (req, res) => {
             .header p{color:#8b949e;margin-top:5px}
             .status-box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:20px;text-align:center}
             .status{font-size:20px;font-weight:bold}
-            .connected{color:#3fb950}
-            .disconnected{color:#f85149}
-            .connecting{color:#d29922}
+            .connected{color:#3fb950}.disconnected{color:#f85149}.connecting{color:#d29922}
             .pairing-box{background:#161b22;border:2px solid #58a6ff;border-radius:10px;padding:25px;margin-bottom:20px;text-align:center}
             .pairing-code{font-size:36px;font-weight:bold;color:#58a6ff;letter-spacing:8px;margin:10px 0}
             .pairing-note{color:#8b949e;font-size:14px}
@@ -92,16 +85,16 @@ app.get('/', (req, res) => {
         </div>
         ${pairingCode ? `
         <div class="pairing-box">
-            <div>📱 Pairing Code — Enter in WhatsApp → Linked Devices → Link with Phone Number</div>
+            <div>📱 Pairing Code</div>
             <div class="pairing-code">${pairingCode}</div>
-            <div class="pairing-note">Go to WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number</div>
+            <div class="pairing-note">WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number</div>
         </div>` : ''}
         <div class="logs-container">
             <h2>📋 Live Logs</h2>
             ${logHtml || '<div class="log-entry">No logs yet...</div>'}
         </div>
         <div class="footer">
-            <p>&copy; 2024 Xyron Rose Manager | Developer: Prime Xyron | t.me/prime_xyron</p>
+            <p>© 2024 Xyron Rose Manager | Developer: Prime Xyron | t.me/prime_xyron</p>
         </div>
     </body>
     </html>
@@ -109,12 +102,8 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    addLog(`🌐 Web panel started on port ${PORT}`);
+    addLog(`Web panel started on port ${PORT}`);
 });
-
-// ═══════════════════════════════════════════════════════════════
-// ═══ DATABASE FUNCTIONS ══════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
 
 async function ensureDbFiles() {
     await fs.ensureDir(DB_DIR);
@@ -132,7 +121,6 @@ async function readDb(filePath) {
         if (!raw || raw.trim() === '') return {};
         return JSON.parse(raw);
     } catch (e) {
-        addLog(`⚠️ DB read error (${path.basename(filePath)}): ${e.message}`);
         return {};
     }
 }
@@ -141,17 +129,15 @@ async function writeDb(filePath, data) {
     try {
         await fs.writeJson(filePath, data, { spaces: 2 });
     } catch (e) {
-        addLog(`⚠️ DB write error (${path.basename(filePath)}): ${e.message}`);
+        addLog(`DB write error: ${e.message}`);
     }
 }
-
-// ═══ GROUP SETTINGS ══════════════════════════════════════════
 
 const DEFAULT_GROUP_SETTINGS = {
     welcome: false,
     goodbye: false,
-    welcomeMsg: '🎉 Welcome {mention}!\n👤 Number: {shownumber}\n👥 Member Count: {membercount}\n🏷️ Group: {groupname}\n🕐 Time: {time}\n📅 Date: {date}',
-    goodbyeMsg: '👋 Goodbye {mention}!\n🏷️ Group: {groupname}\n👥 Remaining Members: {membercount}',
+    welcomeMsg: '🎉 Welcome {mention}!\n👤 Number: {shownumber}\n👥 Members: {membercount}\n🏷️ Group: {groupname}\n🕐 Time: {time}\n📅 Date: {date}',
+    goodbyeMsg: '👋 Goodbye {mention}!\n🏷️ Group: {groupname}\n👥 Remaining: {membercount}',
     antilink: false,
     filters: {},
     reaction: false,
@@ -162,14 +148,19 @@ const DEFAULT_GROUP_SETTINGS = {
 async function getGroupSettings(groupId) {
     const db = await readDb(GROUPS_DB);
     if (!db[groupId]) {
-        db[groupId] = { ...DEFAULT_GROUP_SETTINGS, filters: {} };
+        db[groupId] = JSON.parse(JSON.stringify(DEFAULT_GROUP_SETTINGS));
         await writeDb(GROUPS_DB, db);
     }
-    // Ensure all keys exist (in case DB was created with older version)
     let changed = false;
     for (const key of Object.keys(DEFAULT_GROUP_SETTINGS)) {
         if (db[groupId][key] === undefined) {
-            db[groupId][key] = key === 'filters' ? {} : DEFAULT_GROUP_SETTINGS[key];
+            if (key === 'filters') {
+                db[groupId][key] = {};
+            } else if (key === 'reactionEmojis') {
+                db[groupId][key] = [...DEFAULT_GROUP_SETTINGS[key]];
+            } else {
+                db[groupId][key] = DEFAULT_GROUP_SETTINGS[key];
+            }
             changed = true;
         }
     }
@@ -180,7 +171,7 @@ async function getGroupSettings(groupId) {
 async function updateGroupSettings(groupId, updates) {
     const db = await readDb(GROUPS_DB);
     if (!db[groupId]) {
-        db[groupId] = { ...DEFAULT_GROUP_SETTINGS, filters: {} };
+        db[groupId] = JSON.parse(JSON.stringify(DEFAULT_GROUP_SETTINGS));
     }
     for (const [key, value] of Object.entries(updates)) {
         db[groupId][key] = value;
@@ -188,8 +179,6 @@ async function updateGroupSettings(groupId, updates) {
     await writeDb(GROUPS_DB, db);
     return db[groupId];
 }
-
-// ═══ MUTE FUNCTIONS ══════════════════════════════════════════
 
 async function setMute(groupId, userJid, expiresAt) {
     const nJid = normalizeJid(userJid);
@@ -225,8 +214,6 @@ async function isUserMuted(groupId, userJid) {
     return true;
 }
 
-// ═══ ADMIN/OWNER FUNCTIONS ═══════════════════════════════════
-
 async function setOwner(groupId, userJid) {
     const db = await readDb(ADMINS_DB);
     db[groupId] = normalizeJid(userJid);
@@ -238,35 +225,56 @@ async function getOwner(groupId) {
     return db[groupId] || null;
 }
 
-// ═══ PERMISSION HELPERS ══════════════════════════════════════
-
 function getBotJid(sock) {
     if (!sock.user || !sock.user.id) return '';
     return normalizeJid(sock.user.id);
 }
 
-async function getGroupAdminList(sock, groupId) {
+async function fetchGroupMetadataSafe(sock, groupId) {
     try {
         const metadata = await sock.groupMetadata(groupId);
-        return metadata.participants
-            .filter(p => p.admin === 'admin' || p.admin === 'superadmin')
-            .map(p => normalizeJid(p.id));
+        return metadata;
     } catch (e) {
-        addLog(`⚠️ Failed to fetch group metadata: ${e.message}`);
-        return [];
+        addLog(`Failed to fetch metadata for ${groupId}: ${e.message}`);
+        return null;
     }
 }
 
-async function isGroupAdmin(sock, groupId, userJid) {
-    const admins = await getGroupAdminList(sock, groupId);
-    const nJid = normalizeJid(userJid);
-    return admins.includes(nJid);
+async function isBotAdmin(sock, groupId) {
+    const metadata = await fetchGroupMetadataSafe(sock, groupId);
+    if (!metadata) return false;
+
+    const botJid = getBotJid(sock);
+    const botNumber = botJid.split('@')[0];
+
+    for (const participant of metadata.participants) {
+        const pNumber = participant.id.split('@')[0].split(':')[0];
+        if (pNumber === botNumber) {
+            if (participant.admin === 'admin' || participant.admin === 'superadmin') {
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
 }
 
-async function isBotAdmin(sock, groupId) {
-    const botJid = getBotJid(sock);
-    const admins = await getGroupAdminList(sock, groupId);
-    return admins.includes(botJid);
+async function isGroupAdmin(sock, groupId, userJid) {
+    const metadata = await fetchGroupMetadataSafe(sock, groupId);
+    if (!metadata) return false;
+
+    const userNumber = normalizeJid(userJid).split('@')[0];
+
+    for (const participant of metadata.participants) {
+        const pNumber = participant.id.split('@')[0].split(':')[0];
+        if (pNumber === userNumber) {
+            if (participant.admin === 'admin' || participant.admin === 'superadmin') {
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
 }
 
 async function isAuthorized(sock, groupId, userJid) {
@@ -282,12 +290,9 @@ async function isRegisteredOwner(groupId, userJid) {
     return normalizeJid(owner) === normalizeJid(userJid);
 }
 
-// ═══ MESSAGE HELPERS ═════════════════════════════════════════
-
 function getMessageText(msg) {
     if (!msg || !msg.message) return '';
     const m = msg.message;
-
     if (m.conversation) return m.conversation;
     if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
     if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
@@ -296,12 +301,10 @@ function getMessageText(msg) {
     if (m.buttonsResponseMessage) return m.buttonsResponseMessage.selectedButtonId || '';
     if (m.listResponseMessage) return m.listResponseMessage.singleSelectReply?.selectedRowId || '';
     if (m.templateButtonReplyMessage) return m.templateButtonReplyMessage.selectedId || '';
-
     return '';
 }
 
 function getTargetJid(msg, args) {
-    // Priority 1: Quoted/replied message sender
     const contextInfo = msg.message?.extendedTextMessage?.contextInfo
         || msg.message?.imageMessage?.contextInfo
         || msg.message?.videoMessage?.contextInfo;
@@ -310,12 +313,10 @@ function getTargetJid(msg, args) {
         return normalizeJid(contextInfo.participant);
     }
 
-    // Priority 2: Mentioned users in message
     if (contextInfo && contextInfo.mentionedJid && contextInfo.mentionedJid.length > 0) {
         return normalizeJid(contextInfo.mentionedJid[0]);
     }
 
-    // Priority 3: Parse number from args
     if (args && args.length > 0) {
         for (const arg of args) {
             const cleaned = arg.replace(/[^0-9]/g, '');
@@ -330,26 +331,23 @@ function getTargetJid(msg, args) {
 }
 
 function isSelfMessage(sock, msg) {
-    const botJid = getBotJid(sock);
     if (msg.key.fromMe) return true;
+    const botJid = getBotJid(sock);
     const senderJid = msg.key.participant || msg.key.remoteJid;
     if (normalizeJid(senderJid) === botJid) return true;
+    const botNumber = botJid.split('@')[0];
+    const senderNumber = normalizeJid(senderJid).split('@')[0];
+    if (botNumber === senderNumber) return true;
     return false;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
-// ═══ MAIN BOT FUNCTION ═══════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
-
 async function startBot() {
     await ensureDbFiles();
-    addLog('🚀 Xyron Rose Manager is starting...');
+    addLog('Xyron Rose Manager is starting...');
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
-    addLog(`📡 Baileys version: ${version.join('.')}`);
+    addLog(`Baileys version: ${version.join('.')}`);
 
     const sock = makeWASocket({
         version,
@@ -365,11 +363,9 @@ async function startBot() {
         markOnlineOnConnect: true
     });
 
-    // ═══ PAIRING CODE ════════════════════════════════════════
     if (!sock.authState.creds.registered) {
-        addLog('🔑 Generating pairing code...');
+        addLog('Generating pairing code...');
         connectionStatus = 'connecting';
-
         await new Promise(resolve => setTimeout(resolve, 3000));
 
         try {
@@ -377,17 +373,15 @@ async function startBot() {
             if (phoneNumber.length === 11 && phoneNumber.startsWith('0')) {
                 phoneNumber = '88' + phoneNumber;
             }
-            addLog(`📱 Requesting pairing code for: ${phoneNumber}`);
+            addLog(`Requesting pairing code for: ${phoneNumber}`);
             const code = await sock.requestPairingCode(phoneNumber);
             pairingCode = code;
-            addLog(`✅ Pairing Code: ${code}`);
-            addLog(`📱 Go to WhatsApp → Linked Devices → Link with Phone Number`);
+            addLog(`Pairing Code: ${code}`);
         } catch (e) {
-            addLog(`❌ Pairing code error: ${e.message}`);
+            addLog(`Pairing code error: ${e.message}`);
         }
     }
 
-    // ═══ CONNECTION EVENTS ════════════════════════════════════
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
@@ -396,48 +390,39 @@ async function startBot() {
         if (connection === 'open') {
             connectionStatus = 'connected';
             pairingCode = null;
-            addLog('✅ Successfully connected to WhatsApp!');
-            addLog(`🤖 Bot ID: ${sock.user?.id}`);
-            addLog(`🤖 Normalized Bot JID: ${getBotJid(sock)}`);
+            addLog('Successfully connected to WhatsApp!');
+            addLog(`Bot JID: ${sock.user?.id}`);
+            addLog(`Normalized: ${getBotJid(sock)}`);
         }
 
         if (connection === 'close') {
             connectionStatus = 'disconnected';
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-
-            addLog(`❌ Connection closed. Status code: ${statusCode}`);
+            addLog(`Connection closed. Code: ${statusCode}`);
 
             if (statusCode === DisconnectReason.loggedOut) {
-                addLog('🚪 Logged out. Clearing auth and restarting...');
+                addLog('Logged out. Clearing auth...');
                 await fs.remove(AUTH_DIR);
                 setTimeout(startBot, 5000);
             } else {
-                addLog('🔄 Reconnecting in 5 seconds...');
+                addLog('Reconnecting in 5s...');
                 setTimeout(startBot, 5000);
             }
         }
 
         if (connection === 'connecting') {
             connectionStatus = 'connecting';
-            addLog('🔄 Connecting...');
+            addLog('Connecting...');
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // ═══ GROUP PARTICIPANTS UPDATE (Welcome / Goodbye) ════════
-    // ═══════════════════════════════════════════════════════════
     sock.ev.on('group-participants.update', async (event) => {
         try {
             const { id: groupId, participants, action } = event;
             const settings = await getGroupSettings(groupId);
 
-            let metadata;
-            try {
-                metadata = await sock.groupMetadata(groupId);
-            } catch (e) {
-                addLog(`⚠️ Could not fetch group metadata: ${e.message}`);
-                return;
-            }
+            const metadata = await fetchGroupMetadataSafe(sock, groupId);
+            if (!metadata) return;
 
             for (const participant of participants) {
                 const userNumber = jidToNumber(participant);
@@ -453,27 +438,17 @@ async function startBot() {
                 if (action === 'add' && settings.welcome) {
                     const text = replaceVariables(settings.welcomeMsg, vars);
                     try {
-                        await sock.sendMessage(groupId, {
-                            text: text,
-                            mentions: [participant]
-                        });
-                        addLog(`👋 Welcome message sent in: ${metadata.subject}`);
-                    } catch (e) {
-                        addLog(`⚠️ Welcome send error: ${e.message}`);
-                    }
+                        await sock.sendMessage(groupId, { text: text, mentions: [participant] });
+                        addLog(`Welcome sent in: ${metadata.subject}`);
+                    } catch (e) {}
                 }
 
                 if (action === 'remove' && settings.goodbye) {
                     const text = replaceVariables(settings.goodbyeMsg, vars);
                     try {
-                        await sock.sendMessage(groupId, {
-                            text: text,
-                            mentions: [participant]
-                        });
-                        addLog(`👋 Goodbye message sent in: ${metadata.subject}`);
-                    } catch (e) {
-                        addLog(`⚠️ Goodbye send error: ${e.message}`);
-                    }
+                        await sock.sendMessage(groupId, { text: text, mentions: [participant] });
+                        addLog(`Goodbye sent in: ${metadata.subject}`);
+                    } catch (e) {}
                 }
 
                 if (action === 'remove') {
@@ -481,13 +456,10 @@ async function startBot() {
                 }
             }
         } catch (e) {
-            addLog(`⚠️ group-participants.update error: ${e.message}`);
+            addLog(`Participant update error: ${e.message}`);
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // ═══ MAIN MESSAGE HANDLER ════════════════════════════════
-    // ═══════════════════════════════════════════════════════════
     sock.ev.on('messages.upsert', async (upsert) => {
         if (upsert.type !== 'notify') return;
 
@@ -505,23 +477,16 @@ async function startBot() {
                 const botJid = getBotJid(sock);
                 const selfMsg = isSelfMessage(sock, msg);
 
-                // ───────────────────────────────────────────────
-                // CLEAN SERVICE: Delete system/stub messages
-                // ───────────────────────────────────────────────
                 if (msg.messageStubType) {
                     const settings = await getGroupSettings(groupId);
                     if (settings.cleanservice) {
                         try {
                             await sock.sendMessage(groupId, { delete: msg.key });
-                            addLog(`🧹 System message deleted (stub type: ${msg.messageStubType})`);
-                        } catch (e) {
-                            // Cannot delete, likely not admin
-                        }
+                        } catch (e) {}
                     }
                     continue;
                 }
 
-                // Skip protocol messages
                 const contentType = getContentType(msg.message);
                 if (contentType === 'protocolMessage' || contentType === 'senderKeyDistributionMessage') {
                     continue;
@@ -529,28 +494,20 @@ async function startBot() {
 
                 const body = getMessageText(msg);
 
-                // ───────────────────────────────────────────────
-                // MUTE ENFORCEMENT: Delete muted user messages
-                // ───────────────────────────────────────────────
                 if (!selfMsg) {
                     const muted = await isUserMuted(groupId, normalizedSender);
                     if (muted) {
                         try {
-                            const botIsAdmin = await isBotAdmin(sock, groupId);
-                            if (botIsAdmin) {
+                            const botAdmin = await isBotAdmin(sock, groupId);
+                            if (botAdmin) {
                                 await sock.sendMessage(groupId, { delete: msg.key });
-                                addLog(`🔇 Deleted message from muted user: ${jidToNumber(senderJid)}`);
+                                addLog(`Deleted muted user msg: ${jidToNumber(senderJid)}`);
                             }
-                        } catch (e) {
-                            addLog(`⚠️ Mute delete error: ${e.message}`);
-                        }
-                        continue; // Do not process anything else from muted user
+                        } catch (e) {}
+                        continue;
                     }
                 }
 
-                // ───────────────────────────────────────────────
-                // ANTILINK ENFORCEMENT
-                // ───────────────────────────────────────────────
                 if (!selfMsg && body) {
                     const settings = await getGroupSettings(groupId);
                     if (settings.antilink) {
@@ -558,18 +515,16 @@ async function startBot() {
                         if (hasLink) {
                             const senderIsAuth = await isAuthorized(sock, groupId, normalizedSender);
                             if (!senderIsAuth) {
-                                const botIsAdmin = await isBotAdmin(sock, groupId);
-                                if (botIsAdmin) {
+                                const botAdmin = await isBotAdmin(sock, groupId);
+                                if (botAdmin) {
                                     try {
                                         await sock.sendMessage(groupId, { delete: msg.key });
                                         await sock.sendMessage(groupId, {
                                             text: `⚠️ @${jidToNumber(senderJid)}, sharing links is not allowed in this group! Your message has been deleted.`,
                                             mentions: [senderJid]
                                         });
-                                        addLog(`🔗 Antilink: Deleted message from ${jidToNumber(senderJid)}`);
-                                    } catch (e) {
-                                        addLog(`⚠️ Antilink error: ${e.message}`);
-                                    }
+                                        addLog(`Antilink: deleted from ${jidToNumber(senderJid)}`);
+                                    } catch (e) {}
                                 }
                                 continue;
                             }
@@ -577,9 +532,6 @@ async function startBot() {
                     }
                 }
 
-                // ───────────────────────────────────────────────
-                // WORD FILTER ENFORCEMENT
-                // ───────────────────────────────────────────────
                 if (!selfMsg && body) {
                     const settings = await getGroupSettings(groupId);
                     if (settings.filters && Object.keys(settings.filters).length > 0) {
@@ -590,16 +542,16 @@ async function startBot() {
                             if (lowerBody.includes(filterWord.toLowerCase())) {
                                 const senderIsAuth = await isAuthorized(sock, groupId, normalizedSender);
                                 if (!senderIsAuth) {
-                                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                                    if (botIsAdmin) {
+                                    const botAdmin = await isBotAdmin(sock, groupId);
+                                    if (botAdmin) {
                                         try {
                                             await sock.sendMessage(groupId, { delete: msg.key });
                                             await sock.sendMessage(groupId, {
                                                 text: `⚠️ @${jidToNumber(senderJid)}, ${filterReply}`,
                                                 mentions: [senderJid]
                                             });
-                                            addLog(`🚫 Filter triggered: "${filterWord}" by ${jidToNumber(senderJid)}`);
-                                        } catch (e) { /* silent */ }
+                                            addLog(`Filter "${filterWord}" triggered by ${jidToNumber(senderJid)}`);
+                                        } catch (e) {}
                                     }
                                 }
                                 filtered = true;
@@ -610,82 +562,55 @@ async function startBot() {
                     }
                 }
 
-                // ───────────────────────────────────────────────
-                // AUTO REACTION (only for non-bot messages)
-                // ───────────────────────────────────────────────
                 if (!selfMsg) {
                     const settings = await getGroupSettings(groupId);
                     if (settings.reaction && settings.reactionEmojis && settings.reactionEmojis.length > 0) {
-                        const randomEmoji = settings.reactionEmojis[
-                            Math.floor(Math.random() * settings.reactionEmojis.length)
-                        ];
+                        const randomEmoji = settings.reactionEmojis[Math.floor(Math.random() * settings.reactionEmojis.length)];
                         try {
-                            await sock.sendMessage(groupId, {
-                                react: { text: randomEmoji, key: msg.key }
-                            });
-                        } catch (e) { /* silent */ }
+                            await sock.sendMessage(groupId, { react: { text: randomEmoji, key: msg.key } });
+                        } catch (e) {}
                     }
                 }
 
-                // ───────────────────────────────────────────────
-                // "made by" EASTER EGG
-                // ───────────────────────────────────────────────
                 if (body && body.toLowerCase().includes('made by')) {
                     try {
                         await sock.sendMessage(groupId, {
                             text: '🤖 *Xyron Rose Manager*\n👨‍💻 Developer: Prime Xyron\n📢 t.me/prime_xyron'
                         }, { quoted: msg });
-                    } catch (e) { /* silent */ }
+                    } catch (e) {}
                 }
 
-                // ───────────────────────────────────────────────
-                // COMMAND PARSING
-                // ───────────────────────────────────────────────
                 if (!body || body.length === 0) continue;
 
                 let command = '';
                 let args = [];
                 let prefix = '';
-                let fullCommand = '';
 
-                // Handle !! prefix commands (!!help, !!goback)
                 if (body.startsWith('!!')) {
                     prefix = '!!';
                     const rest = body.slice(2).trim().split(/\s+/);
                     command = rest.shift()?.toLowerCase() || '';
                     args = rest;
-                    fullCommand = prefix + command;
-                }
-                // Handle ! prefix commands (!addme, !cleanservice, !reaction)
-                else if (body.startsWith('!')) {
+                } else if (body.startsWith('!')) {
                     prefix = '!';
                     const rest = body.slice(1).trim().split(/\s+/);
                     command = rest.shift()?.toLowerCase() || '';
                     args = rest;
-                    fullCommand = prefix + command;
-                }
-                // Handle . prefix commands (.welcome, .mute, .kick, etc.)
-                else if (body.startsWith('.')) {
+                } else if (body.startsWith('.')) {
                     prefix = '.';
                     const rest = body.slice(1).trim().split(/\s+/);
                     command = rest.shift()?.toLowerCase() || '';
                     args = rest;
-                    fullCommand = prefix + command;
-                }
-                else {
-                    continue; // Not a command
+                } else {
+                    continue;
                 }
 
                 if (!command) continue;
 
-                addLog(`📨 Command: ${fullCommand} | Args: [${args.join(', ')}] | Group: ${groupId} | User: ${jidToNumber(senderJid)}`);
+                addLog(`CMD: ${prefix}${command} | Args: [${args.join(', ')}] | From: ${jidToNumber(senderJid)}`);
 
-                // ═══════════════════════════════════════════════
-                // ═══ !!help ═══════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '!!' && command === 'help') {
-                    const helpText = `
-╔═══════════════════════════════════╗
+                    const helpText = `╔═══════════════════════════════════╗
 ║     🤖 *XYRON ROSE MANAGER*       ║
 ║   Group Management Bot v2.0       ║
 ╚═══════════════════════════════════╝
@@ -694,8 +619,9 @@ async function startBot() {
 
 ━━━ 👑 *SETUP & ADMIN* ━━━
 • \`!addme\` — Register as group owner
-• \`!!goback\` — Bot leaves the group (Owner only)
-• \`!cleanservice on/off\` — Auto-delete system messages
+• \`!!goback\` — Bot leaves group (Owner only)
+• \`!!verify\` — Check if bot has admin rights
+• \`!cleanservice on/off\` — Auto-delete system msgs
 
 ━━━ 👋 *WELCOME & GOODBYE* ━━━
 • \`.welcome on/off\` — Toggle welcome messages
@@ -708,14 +634,15 @@ async function startBot() {
 \`{time}\` \`{date}\` \`{groupname}\`
 
 ━━━ 🔇 *MUTE & SECURITY* ━━━
-• \`.mute [time] [target]\` — Mute a user (10m/1h/1d)
-• \`.unmute [target]\` — Unmute a user
+• \`.mute [time] [target]\` — Mute user (10m/1h/1d)
+• \`.unmute [target]\` — Unmute user
 • \`.antilink on/off\` — Block links
 • \`.filter [word] [reply]\` — Set word filter
-• \`.removefilter [word]\` — Remove a filter
+• \`.removefilter [word]\` — Remove filter
 
 ━━━ 🛡️ *MODERATION* ━━━
 • \`.promote [target]\` — Promote to admin
+• \`.demote [target]\` — Demote from admin
 • \`.kick [target]\` — Remove from group
 • \`.tagall [text]\` — Tag all members
 
@@ -726,16 +653,31 @@ async function startBot() {
 ━━━━━━━━━━━━━━━━━━━━━━━
 👨‍💻 *Developer:* Prime Xyron
 📢 *Telegram:* t.me/prime_xyron
-━━━━━━━━━━━━━━━━━━━━━━━
-                    `.trim();
+━━━━━━━━━━━━━━━━━━━━━━━`;
 
                     await sock.sendMessage(groupId, { text: helpText }, { quoted: msg });
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ !addme ═══════════════════════════════════
-                // ═══════════════════════════════════════════════
+                if (prefix === '!!' && command === 'verify') {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    const metadata = await fetchGroupMetadataSafe(sock, groupId);
+                    const groupName = metadata ? metadata.subject : 'Unknown';
+
+                    if (botAdmin) {
+                        await sock.sendMessage(groupId, {
+                            text: `✅ *Verification Successful!*\n\n🤖 Bot has admin rights in this group.\n🏷️ Group: ${groupName}\n\nAll features are fully operational. You can now use all commands.`
+                        }, { quoted: msg });
+                        addLog(`Verify: Bot IS admin in ${groupName}`);
+                    } else {
+                        await sock.sendMessage(groupId, {
+                            text: `❌ *Verification Failed!*\n\n🤖 Bot does NOT have admin rights in this group.\n🏷️ Group: ${groupName}\n\n⚠️ Please promote the bot to admin to use features like:\n• Antilink\n• Filter\n• Mute\n• Kick/Promote\n• Clean Service`
+                        }, { quoted: msg });
+                        addLog(`Verify: Bot is NOT admin in ${groupName}`);
+                    }
+                    continue;
+                }
+
                 if (prefix === '!' && command === 'addme') {
                     const existingOwner = await getOwner(groupId);
                     if (existingOwner) {
@@ -749,215 +691,151 @@ async function startBot() {
                             text: `✅ Success! @${jidToNumber(senderJid)} is now the registered owner of this group.\n\nYou can now use all bot commands.`,
                             mentions: [senderJid]
                         }, { quoted: msg });
-                        addLog(`👑 New owner registered: ${jidToNumber(senderJid)} for group: ${groupId}`);
+                        addLog(`Owner registered: ${jidToNumber(senderJid)} for ${groupId}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // AUTH CHECK FOR ALL REMAINING COMMANDS
-                // ═══════════════════════════════════════════════
                 const authorized = await isAuthorized(sock, groupId, normalizedSender);
                 if (!authorized) {
                     await sock.sendMessage(groupId, {
-                        text: '❌ You do not have permission to use this command. Only group admins or the registered owner can use bot commands.'
+                        text: '❌ You do not have permission. Only group admins or the registered owner can use bot commands.'
                     }, { quoted: msg });
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ !!goback ═════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '!!' && command === 'goback') {
                     const isOwner = await isRegisteredOwner(groupId, normalizedSender);
                     if (!isOwner) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Only the registered owner can make the bot leave. Use `!addme` first if no owner is registered.'
+                            text: '❌ Only the registered owner can make the bot leave.'
                         }, { quoted: msg });
                         continue;
                     }
                     await sock.sendMessage(groupId, {
-                        text: '👋 Goodbye! Xyron Rose Manager is leaving this group...\n🤖 Add me back anytime!\n📢 t.me/prime_xyron'
+                        text: '👋 Goodbye! Xyron Rose Manager is leaving...\n🤖 Add me back anytime!\n📢 t.me/prime_xyron'
                     });
                     await new Promise(resolve => setTimeout(resolve, 2000));
                     try {
                         await sock.groupLeave(groupId);
-                        addLog(`🚪 Bot left group: ${groupId}`);
+                        addLog(`Bot left group: ${groupId}`);
                     } catch (e) {
-                        addLog(`⚠️ Error leaving group: ${e.message}`);
+                        addLog(`Leave error: ${e.message}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ !cleanservice ════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '!' && command === 'cleanservice') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { cleanservice: true });
                         await sock.sendMessage(groupId, {
-                            text: '✅ Clean Service has been *enabled*.\n\nSystem messages (join/leave notifications) will be automatically deleted.'
+                            text: '✅ Clean Service *enabled*.\nSystem messages will be auto-deleted.'
                         }, { quoted: msg });
-                        addLog(`🧹 Clean service ON for group: ${groupId}`);
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { cleanservice: false });
                         await sock.sendMessage(groupId, {
-                            text: '❌ Clean Service has been *disabled*.'
+                            text: '❌ Clean Service *disabled*.'
                         }, { quoted: msg });
-                        addLog(`🧹 Clean service OFF for group: ${groupId}`);
                     } else {
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: '📝 Usage: `!cleanservice on` or `!cleanservice off`'
+                            text: `📝 Usage: \`!cleanservice on\` or \`!cleanservice off\`\nCurrent: ${s.cleanservice ? '✅ ON' : '❌ OFF'}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .welcome ═════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'welcome') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { welcome: true });
                         await sock.sendMessage(groupId, {
-                            text: '✅ Welcome messages have been *enabled*!\n\nNew members will receive a welcome message when they join.'
+                            text: '✅ Welcome messages *enabled*!'
                         }, { quoted: msg });
-                        addLog(`👋 Welcome ON for group: ${groupId}`);
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { welcome: false });
                         await sock.sendMessage(groupId, {
-                            text: '❌ Welcome messages have been *disabled*.'
+                            text: '❌ Welcome messages *disabled*.'
                         }, { quoted: msg });
-                        addLog(`👋 Welcome OFF for group: ${groupId}`);
                     } else {
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.welcome on\` or \`.welcome off\`\n\n📊 Current status: ${settings.welcome ? '✅ ON' : '❌ OFF'}`
+                            text: `📝 Usage: \`.welcome on\` or \`.welcome off\`\nCurrent: ${s.welcome ? '✅ ON' : '❌ OFF'}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .goodbye ═════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'goodbye') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { goodbye: true });
                         await sock.sendMessage(groupId, {
-                            text: '✅ Goodbye messages have been *enabled*!\n\nA farewell message will be sent when someone leaves.'
+                            text: '✅ Goodbye messages *enabled*!'
                         }, { quoted: msg });
-                        addLog(`👋 Goodbye ON for group: ${groupId}`);
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { goodbye: false });
                         await sock.sendMessage(groupId, {
-                            text: '❌ Goodbye messages have been *disabled*.'
+                            text: '❌ Goodbye messages *disabled*.'
                         }, { quoted: msg });
-                        addLog(`👋 Goodbye OFF for group: ${groupId}`);
                     } else {
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.goodbye on\` or \`.goodbye off\`\n\n📊 Current status: ${settings.goodbye ? '✅ ON' : '❌ OFF'}`
+                            text: `📝 Usage: \`.goodbye on\` or \`.goodbye off\`\nCurrent: ${s.goodbye ? '✅ ON' : '❌ OFF'}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .setwelcome ══════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'setwelcome') {
                     const welcomeText = args.join(' ').trim();
                     if (!welcomeText) {
                         await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.setwelcome [message]\`
-
-📌 *Available Variables:*
-• \`{mention}\` — Tags the user
-• \`{shownumber}\` — User's phone number
-• \`{membercount}\` — Current member count
-• \`{groupname}\` — Group name
-• \`{time}\` — Current time
-• \`{date}\` — Current date
-
-📝 *Example:*
-\`.setwelcome 🎉 Welcome {mention}! You have joined {groupname}. We now have {membercount} members!\``
+                            text: `📝 *Usage:* \`.setwelcome [message]\`\n\n📌 *Variables:*\n• \`{mention}\` — Tags user\n• \`{shownumber}\` — Phone number\n• \`{membercount}\` — Member count\n• \`{groupname}\` — Group name\n• \`{time}\` — Current time\n• \`{date}\` — Current date\n\n📝 *Example:*\n\`.setwelcome 🎉 Welcome {mention} to {groupname}!\``
                         }, { quoted: msg });
                     } else {
                         await updateGroupSettings(groupId, { welcomeMsg: welcomeText });
                         const preview = replaceVariables(welcomeText, {
-                            mention: '@User',
-                            shownumber: '88019XXXXXXXX',
-                            membercount: 100,
-                            groupname: 'Test Group'
+                            mention: '@User', shownumber: '88019XXXXXXXX', membercount: 100, groupname: 'Test Group'
                         });
                         await sock.sendMessage(groupId, {
-                            text: `✅ Welcome message has been set!\n\n📝 *Preview:*\n${preview}`
+                            text: `✅ Welcome message set!\n\n📝 *Preview:*\n${preview}`
                         }, { quoted: msg });
-                        addLog(`📝 Welcome message set for group: ${groupId}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .setgoodbye ══════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'setgoodbye') {
                     const goodbyeText = args.join(' ').trim();
                     if (!goodbyeText) {
                         await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.setgoodbye [message]\`
-
-📌 *Available Variables:*
-• \`{mention}\` — Tags the user
-• \`{shownumber}\` — User's phone number
-• \`{membercount}\` — Remaining member count
-• \`{groupname}\` — Group name
-• \`{time}\` — Current time
-• \`{date}\` — Current date`
+                            text: `📝 *Usage:* \`.setgoodbye [message]\`\n\n📌 *Variables:*\n• \`{mention}\` — Tags user\n• \`{shownumber}\` — Phone number\n• \`{membercount}\` — Remaining count\n• \`{groupname}\` — Group name\n• \`{time}\` — Time\n• \`{date}\` — Date`
                         }, { quoted: msg });
                     } else {
                         await updateGroupSettings(groupId, { goodbyeMsg: goodbyeText });
                         const preview = replaceVariables(goodbyeText, {
-                            mention: '@User',
-                            shownumber: '88019XXXXXXXX',
-                            membercount: 99,
-                            groupname: 'Test Group'
+                            mention: '@User', shownumber: '88019XXXXXXXX', membercount: 99, groupname: 'Test Group'
                         });
                         await sock.sendMessage(groupId, {
-                            text: `✅ Goodbye message has been set!\n\n📝 *Preview:*\n${preview}`
+                            text: `✅ Goodbye message set!\n\n📝 *Preview:*\n${preview}`
                         }, { quoted: msg });
-                        addLog(`📝 Goodbye message set for group: ${groupId}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .mute ════════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'mute') {
-                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                    if (!botIsAdmin) {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    if (!botAdmin) {
                         await sock.sendMessage(groupId, {
-                            text: '⚠️ The bot must be an admin to mute users! Please promote the bot first.'
+                            text: '⚠️ Bot must be admin to mute users! Use `!!verify` to check.'
                         }, { quoted: msg });
                         continue;
                     }
 
                     if (args.length < 1) {
                         await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.mute [time] [target]\`
-
-⏱️ *Time formats:* 10s, 30m, 1h, 1d
-👤 *Target:* Reply to a message OR provide an 11-digit number
-
-📝 *Examples:*
-• \`.mute 30m\` (reply to someone's message)
-• \`.mute 1h 01912345678\`
-• \`.mute 1d 8801912345678\``
+                            text: `📝 *Usage:* \`.mute [time] [target]\`\n\n⏱️ *Time:* 10s, 30m, 1h, 1d\n👤 *Target:* Reply to msg OR phone number\n\n📝 *Examples:*\n• \`.mute 30m\` (reply to someone)\n• \`.mute 1h 01912345678\``
                         }, { quoted: msg });
                         continue;
                     }
@@ -966,7 +844,7 @@ async function startBot() {
                     const duration = parseTimeString(timeStr);
                     if (!duration) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Invalid time format! Use: `10s`, `30m`, `1h`, `1d`'
+                            text: '❌ Invalid time! Use: `10s`, `30m`, `1h`, `1d`'
                         }, { quoted: msg });
                         continue;
                     }
@@ -974,55 +852,39 @@ async function startBot() {
                     const targetJid = getTargetJid(msg, args.slice(1));
                     if (!targetJid) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a phone number.\n\nExample: `.mute 30m 01912345678`'
+                            text: '❌ Target not found! Reply to a message or provide a number.'
                         }, { quoted: msg });
                         continue;
                     }
 
-                    // Don't mute the bot
-                    if (normalizeJid(targetJid) === botJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Cannot mute the bot!'
-                        }, { quoted: msg });
+                    if (normalizeJid(targetJid).split('@')[0] === botJid.split('@')[0]) {
+                        await sock.sendMessage(groupId, { text: '❌ Cannot mute the bot!' }, { quoted: msg });
                         continue;
                     }
 
-                    // Don't mute admins
                     const targetIsAdmin = await isGroupAdmin(sock, groupId, targetJid);
                     if (targetIsAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Cannot mute a group admin!'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Cannot mute a group admin!' }, { quoted: msg });
                         continue;
                     }
 
                     const expiresAt = Date.now() + duration;
                     await setMute(groupId, targetJid, expiresAt);
-
                     const expiryDate = new Date(expiresAt).toLocaleString('en-US', { timeZone: 'Asia/Dhaka' });
 
                     await sock.sendMessage(groupId, {
-                        text: `🔇 *User has been muted!*
-
-👤 User: @${jidToNumber(targetJid)}
-⏱️ Duration: ${timeStr}
-📅 Mute expires: ${expiryDate}
-
-⚠️ All messages from this user will be automatically deleted until the mute expires.`,
+                        text: `🔇 *User Muted!*\n\n👤 User: @${jidToNumber(targetJid)}\n⏱️ Duration: ${timeStr}\n📅 Expires: ${expiryDate}\n\n⚠️ All their messages will be auto-deleted.`,
                         mentions: [targetJid]
                     }, { quoted: msg });
-                    addLog(`🔇 Muted: ${jidToNumber(targetJid)} for ${timeStr} in group: ${groupId}`);
+                    addLog(`Muted: ${jidToNumber(targetJid)} for ${timeStr}`);
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .unmute ══════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'unmute') {
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a phone number.\n\nExample: `.unmute 01912345678`'
+                            text: '❌ Target not found! Reply to a message or provide a number.'
                         }, { quoted: msg });
                         continue;
                     }
@@ -1030,68 +892,62 @@ async function startBot() {
                     const removed = await removeMute(groupId, targetJid);
                     if (removed) {
                         await sock.sendMessage(groupId, {
-                            text: `🔊 *User has been unmuted!*\n\n👤 User: @${jidToNumber(targetJid)}\n✅ They can now send messages again.`,
+                            text: `🔊 *User Unmuted!*\n\n👤 User: @${jidToNumber(targetJid)}\n✅ They can send messages again.`,
                             mentions: [targetJid]
                         }, { quoted: msg });
-                        addLog(`🔊 Unmuted: ${jidToNumber(targetJid)} in group: ${groupId}`);
                     } else {
                         await sock.sendMessage(groupId, {
-                            text: `ℹ️ @${jidToNumber(targetJid)} is not in the mute list.`,
+                            text: `ℹ️ @${jidToNumber(targetJid)} is not muted.`,
                             mentions: [targetJid]
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .antilink ════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'antilink') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
-                        const botIsAdmin = await isBotAdmin(sock, groupId);
-                        if (!botIsAdmin) {
+                        const botAdmin = await isBotAdmin(sock, groupId);
+                        if (!botAdmin) {
                             await sock.sendMessage(groupId, {
-                                text: '⚠️ The bot must be an admin to enable antilink! Please promote the bot first.'
+                                text: '⚠️ Bot must be admin first! Use `!!verify` to check.'
                             }, { quoted: msg });
                             continue;
                         }
                         await updateGroupSettings(groupId, { antilink: true });
                         await sock.sendMessage(groupId, {
-                            text: '✅ Antilink has been *enabled*!\n\nAny message containing WhatsApp links will be automatically deleted.\n\n⚠️ Admins and the registered owner are exempt.'
+                            text: '✅ Antilink *enabled*!\nMessages with WhatsApp links will be deleted.\n\n⚠️ Admins & owner are exempt.'
                         }, { quoted: msg });
-                        addLog(`🔗 Antilink ON for group: ${groupId}`);
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { antilink: false });
                         await sock.sendMessage(groupId, {
-                            text: '❌ Antilink has been *disabled*.'
+                            text: '❌ Antilink *disabled*.'
                         }, { quoted: msg });
-                        addLog(`🔗 Antilink OFF for group: ${groupId}`);
                     } else {
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.antilink on\` or \`.antilink off\`\n\n📊 Current status: ${settings.antilink ? '✅ ON' : '❌ OFF'}`
+                            text: `📝 Usage: \`.antilink on\` or \`.antilink off\`\nCurrent: ${s.antilink ? '✅ ON' : '❌ OFF'}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .filter ══════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'filter') {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    if (!botAdmin) {
+                        await sock.sendMessage(groupId, {
+                            text: '⚠️ Bot must be admin to enforce filters! Use `!!verify` to check.'
+                        }, { quoted: msg });
+                        continue;
+                    }
+
                     if (args.length < 2) {
                         const settings = await getGroupSettings(groupId);
                         const filterKeys = Object.keys(settings.filters || {});
 
                         if (filterKeys.length === 0) {
                             await sock.sendMessage(groupId, {
-                                text: `📝 *Usage:* \`.filter [word] [reply]\`
-
-📝 *Example:* \`.filter spam Stop spamming in this group!\`
-
-📋 No filters are currently set.
-🗑️ Remove a filter: \`.removefilter [word]\``
+                                text: `📝 *Usage:* \`.filter [word] [reply]\`\n\n📝 *Example:* \`.filter spam No spamming!\`\n\n📋 No active filters.\n🗑️ Remove: \`.removefilter [word]\``
                             }, { quoted: msg });
                         } else {
                             let listText = '📋 *Active Filters:*\n\n';
@@ -1104,37 +960,23 @@ async function startBot() {
                         continue;
                     }
 
-                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                    if (!botIsAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ The bot must be an admin to enforce filters! Please promote the bot first.'
-                        }, { quoted: msg });
-                        continue;
-                    }
-
                     const filterWord = args[0].toLowerCase();
                     const filterReply = args.slice(1).join(' ');
-
                     const settings = await getGroupSettings(groupId);
                     const filters = settings.filters || {};
                     filters[filterWord] = filterReply;
                     await updateGroupSettings(groupId, { filters: filters });
 
                     await sock.sendMessage(groupId, {
-                        text: `✅ Filter has been set!\n\n🔤 Word: *${filterWord}*\n💬 Reply: ${filterReply}\n\n⚠️ When someone says "${filterWord}", their message will be deleted and they'll receive the reply.`
+                        text: `✅ Filter set!\n\n🔤 Word: *${filterWord}*\n💬 Reply: ${filterReply}\n\n⚠️ Messages containing "${filterWord}" will be deleted.`
                     }, { quoted: msg });
-                    addLog(`🚫 New filter: "${filterWord}" in group: ${groupId}`);
+                    addLog(`Filter added: "${filterWord}" in ${groupId}`);
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .removefilter ════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'removefilter') {
                     if (args.length < 1) {
-                        await sock.sendMessage(groupId, {
-                            text: '📝 Usage: `.removefilter [word]`'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '📝 Usage: `.removefilter [word]`' }, { quoted: msg });
                         continue;
                     }
 
@@ -1146,25 +988,21 @@ async function startBot() {
                         delete filters[filterWord];
                         await updateGroupSettings(groupId, { filters: filters });
                         await sock.sendMessage(groupId, {
-                            text: `✅ Filter "${filterWord}" has been removed.`
+                            text: `✅ Filter "${filterWord}" removed.`
                         }, { quoted: msg });
-                        addLog(`🗑️ Filter removed: "${filterWord}" from group: ${groupId}`);
                     } else {
                         await sock.sendMessage(groupId, {
-                            text: `❌ No filter found with the word "${filterWord}".`
+                            text: `❌ No filter found: "${filterWord}"`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .promote ═════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'promote') {
-                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                    if (!botIsAdmin) {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    if (!botAdmin) {
                         await sock.sendMessage(groupId, {
-                            text: '⚠️ The bot must be an admin to promote users! Please promote the bot first.'
+                            text: '⚠️ Bot must be admin to promote! Use `!!verify` to check.'
                         }, { quoted: msg });
                         continue;
                     }
@@ -1172,12 +1010,11 @@ async function startBot() {
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a phone number.\n\nExamples:\n• `.promote` (reply to message)\n• `.promote 01912345678`'
+                            text: '❌ Target not found! Reply to a message or provide a number.\n\nExamples:\n• `.promote` (reply)\n• `.promote 01912345678`'
                         }, { quoted: msg });
                         continue;
                     }
 
-                    // Check if target is already admin
                     const alreadyAdmin = await isGroupAdmin(sock, groupId, targetJid);
                     if (alreadyAdmin) {
                         await sock.sendMessage(groupId, {
@@ -1193,24 +1030,20 @@ async function startBot() {
                             text: `✅ @${jidToNumber(targetJid)} has been promoted to admin! 🎉`,
                             mentions: [targetJid]
                         }, { quoted: msg });
-                        addLog(`⬆️ Promoted: ${jidToNumber(targetJid)} in group: ${groupId}`);
+                        addLog(`Promoted: ${jidToNumber(targetJid)} in ${groupId}`);
                     } catch (e) {
                         await sock.sendMessage(groupId, {
-                            text: `❌ Failed to promote: ${e.message}\n\nMake sure the user is in the group and the bot has admin rights.`
+                            text: `❌ Promote failed: ${e.message}`
                         }, { quoted: msg });
-                        addLog(`⚠️ Promote error: ${e.message}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .demote ══════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'demote') {
-                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                    if (!botIsAdmin) {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    if (!botAdmin) {
                         await sock.sendMessage(groupId, {
-                            text: '⚠️ The bot must be an admin to demote users!'
+                            text: '⚠️ Bot must be admin to demote!'
                         }, { quoted: msg });
                         continue;
                     }
@@ -1218,7 +1051,7 @@ async function startBot() {
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a phone number.'
+                            text: '❌ Target not found! Reply or provide a number.'
                         }, { quoted: msg });
                         continue;
                     }
@@ -1226,26 +1059,23 @@ async function startBot() {
                     try {
                         await sock.groupParticipantsUpdate(groupId, [targetJid], 'demote');
                         await sock.sendMessage(groupId, {
-                            text: `✅ @${jidToNumber(targetJid)} has been demoted from admin.`,
+                            text: `✅ @${jidToNumber(targetJid)} has been demoted.`,
                             mentions: [targetJid]
                         }, { quoted: msg });
-                        addLog(`⬇️ Demoted: ${jidToNumber(targetJid)} in group: ${groupId}`);
+                        addLog(`Demoted: ${jidToNumber(targetJid)} in ${groupId}`);
                     } catch (e) {
                         await sock.sendMessage(groupId, {
-                            text: `❌ Failed to demote: ${e.message}`
+                            text: `❌ Demote failed: ${e.message}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .kick ════════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'kick') {
-                    const botIsAdmin = await isBotAdmin(sock, groupId);
-                    if (!botIsAdmin) {
+                    const botAdmin = await isBotAdmin(sock, groupId);
+                    if (!botAdmin) {
                         await sock.sendMessage(groupId, {
-                            text: '⚠️ The bot must be an admin to kick users! Please promote the bot first.'
+                            text: '⚠️ Bot must be admin to kick! Use `!!verify` to check.'
                         }, { quoted: msg });
                         continue;
                     }
@@ -1253,20 +1083,18 @@ async function startBot() {
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a phone number.\n\nExamples:\n• `.kick` (reply to message)\n• `.kick 01912345678`'
+                            text: '❌ Target not found! Reply or provide a number.\n\nExamples:\n• `.kick` (reply)\n• `.kick 01912345678`'
                         }, { quoted: msg });
                         continue;
                     }
 
-                    // Don't kick the bot
-                    if (normalizeJid(targetJid) === botJid) {
+                    if (normalizeJid(targetJid).split('@')[0] === botJid.split('@')[0]) {
                         await sock.sendMessage(groupId, {
-                            text: '❌ Cannot kick the bot! Use `!!goback` to make the bot leave.'
+                            text: '❌ Cannot kick the bot! Use `!!goback` instead.'
                         }, { quoted: msg });
                         continue;
                     }
 
-                    // Don't kick other admins (unless sender is owner)
                     const targetIsAdmin = await isGroupAdmin(sock, groupId, targetJid);
                     if (targetIsAdmin) {
                         const senderIsOwner = await isRegisteredOwner(groupId, normalizedSender);
@@ -1281,28 +1109,26 @@ async function startBot() {
                     try {
                         await sock.groupParticipantsUpdate(groupId, [targetJid], 'remove');
                         await sock.sendMessage(groupId, {
-                            text: `✅ @${jidToNumber(targetJid)} has been removed from the group. 👢`,
+                            text: `✅ @${jidToNumber(targetJid)} has been removed. 👢`,
                             mentions: [targetJid]
                         }, { quoted: msg });
-                        addLog(`👢 Kicked: ${jidToNumber(targetJid)} from group: ${groupId}`);
-
-                        // Also remove any mute for them
+                        addLog(`Kicked: ${jidToNumber(targetJid)} from ${groupId}`);
                         await removeMute(groupId, targetJid);
                     } catch (e) {
                         await sock.sendMessage(groupId, {
-                            text: `❌ Failed to kick: ${e.message}\n\nMake sure the user is in the group.`
+                            text: `❌ Kick failed: ${e.message}`
                         }, { quoted: msg });
-                        addLog(`⚠️ Kick error: ${e.message}`);
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .tagall ══════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'tagall') {
                     try {
-                        const metadata = await sock.groupMetadata(groupId);
+                        const metadata = await fetchGroupMetadataSafe(sock, groupId);
+                        if (!metadata) {
+                            await sock.sendMessage(groupId, { text: '❌ Could not fetch group info.' }, { quoted: msg });
+                            continue;
+                        }
                         const participants = metadata.participants;
                         const tagText = args.join(' ') || '📢 Attention Everyone!';
 
@@ -1315,94 +1141,65 @@ async function startBot() {
                         }
 
                         text += `\n👥 Total: ${participants.length} members`;
-
-                        await sock.sendMessage(groupId, {
-                            text: text,
-                            mentions: mentions
-                        }, { quoted: msg });
-                        addLog(`📢 Tag all: ${participants.length} members in group: ${groupId}`);
+                        await sock.sendMessage(groupId, { text: text, mentions: mentions }, { quoted: msg });
+                        addLog(`Tag all: ${participants.length} in ${groupId}`);
                     } catch (e) {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ Failed to tag all: ${e.message}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `❌ Tag all failed: ${e.message}` }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ !reaction ════════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '!' && command === 'reaction') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { reaction: true });
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `✅ Auto Reaction has been *enabled*! 😁\n\nThe bot will randomly react to messages with these emojis:\n${(settings.reactionEmojis || []).join(' ')}\n\nChange emojis: \`.reaction set [emojis]\``
+                            text: `✅ Auto Reaction *enabled*! 😁\n\nEmojis: ${(s.reactionEmojis || []).join(' ')}\nChange: \`.reaction set [emojis]\``
                         }, { quoted: msg });
-                        addLog(`😁 Reaction ON for group: ${groupId}`);
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { reaction: false });
                         await sock.sendMessage(groupId, {
-                            text: '❌ Auto Reaction has been *disabled*.'
+                            text: '❌ Auto Reaction *disabled*.'
                         }, { quoted: msg });
-                        addLog(`😁 Reaction OFF for group: ${groupId}`);
                     } else {
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`!reaction on\` or \`!reaction off\`\n\n📊 Current status: ${settings.reaction ? '✅ ON' : '❌ OFF'}\n😁 Emojis: ${(settings.reactionEmojis || []).join(' ')}`
+                            text: `📝 Usage: \`!reaction on\` or \`!reaction off\`\nCurrent: ${s.reaction ? '✅ ON' : '❌ OFF'}\nEmojis: ${(s.reactionEmojis || []).join(' ')}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // ═══════════════════════════════════════════════
-                // ═══ .reaction set ════════════════════════════
-                // ═══════════════════════════════════════════════
                 if (prefix === '.' && command === 'reaction') {
                     const subCommand = args[0]?.toLowerCase();
                     if (subCommand === 'set') {
                         const emojis = args.slice(1).filter(e => e.trim() !== '');
                         if (emojis.length === 0) {
                             await sock.sendMessage(groupId, {
-                                text: `📝 *Usage:* \`.reaction set [emojis]\`
-
-📝 *Example:* \`.reaction set 😁 🙏 🌚 ❤️ 🔥\`
-
-Separate emojis with spaces.`
+                                text: `📝 *Usage:* \`.reaction set [emojis]\`\n\n📝 *Example:* \`.reaction set 😁 🙏 🌚 ❤️ 🔥\``
                             }, { quoted: msg });
                         } else {
                             await updateGroupSettings(groupId, { reactionEmojis: emojis });
                             await sock.sendMessage(groupId, {
-                                text: `✅ Reaction emojis have been set!\n\n${emojis.join(' ')}\n\nTotal: ${emojis.length} emojis`
+                                text: `✅ Reaction emojis set!\n\n${emojis.join(' ')}\nTotal: ${emojis.length} emojis`
                             }, { quoted: msg });
-                            addLog(`😁 Reaction emojis updated for group: ${groupId}`);
                         }
                     } else {
-                        const settings = await getGroupSettings(groupId);
+                        const s = await getGroupSettings(groupId);
                         await sock.sendMessage(groupId, {
-                            text: `📋 *Auto Reaction Settings*
-
-• Status: ${settings.reaction ? '✅ ON' : '❌ OFF'}
-• Emojis: ${(settings.reactionEmojis || []).join(' ')}
-
-📝 Commands:
-• \`!reaction on/off\` — Toggle on/off
-• \`.reaction set [emojis]\` — Set emojis`
+                            text: `📋 *Auto Reaction Settings*\n\n• Status: ${s.reaction ? '✅ ON' : '❌ OFF'}\n• Emojis: ${(s.reactionEmojis || []).join(' ')}\n\nCommands:\n• \`!reaction on/off\`\n• \`.reaction set [emojis]\``
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
             } catch (msgError) {
-                addLog(`⚠️ Message processing error: ${msgError.message}`);
+                addLog(`Message error: ${msgError.message}`);
             }
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // ═══ PERIODIC MUTE CLEANUP (every 30 seconds) ════════════
-    // ═══════════════════════════════════════════════════════════
     setInterval(async () => {
         try {
             const db = await readDb(MUTES_DB);
@@ -1414,14 +1211,13 @@ Separate emojis with spaces.`
                     if (now >= db[groupId][userJid]) {
                         delete db[groupId][userJid];
                         changed = true;
-                        addLog(`🔊 Mute expired (auto): ${jidToNumber(userJid)} in group: ${groupId}`);
-
+                        addLog(`Mute expired: ${jidToNumber(userJid)} in ${groupId}`);
                         try {
                             await sock.sendMessage(groupId, {
-                                text: `🔊 @${jidToNumber(userJid)}'s mute has expired. They can now send messages again. ✅`,
+                                text: `🔊 @${jidToNumber(userJid)}'s mute has expired. They can now send messages. ✅`,
                                 mentions: [userJid]
                             });
-                        } catch (e) { /* Group may no longer exist */ }
+                        } catch (e) {}
                     }
                 }
                 if (db[groupId] && Object.keys(db[groupId]).length === 0) {
@@ -1431,19 +1227,13 @@ Separate emojis with spaces.`
             }
 
             if (changed) await writeDb(MUTES_DB, db);
-        } catch (e) {
-            // Silent cleanup error
-        }
+        } catch (e) {}
     }, 30000);
 
-    addLog('✅ All event handlers have been set up successfully!');
-    addLog('🤖 Xyron Rose Manager is ready and waiting for messages...');
+    addLog('All handlers ready. Xyron Rose Manager is operational.');
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ═══ START ════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
 startBot().catch(err => {
-    addLog(`❌ Fatal Error: ${err.message}`);
+    addLog(`Fatal: ${err.message}`);
     console.error(err);
 });
