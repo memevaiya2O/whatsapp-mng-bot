@@ -6,7 +6,6 @@ const {
     DisconnectReason,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
-    proto,
     getContentType
 } = require('@whiskeysockets/baileys');
 
@@ -14,6 +13,7 @@ const pino = require('pino');
 const fs = require('fs-extra');
 const path = require('path');
 const express = require('express');
+const crypto = require('crypto');
 
 const {
     replaceVariables,
@@ -31,10 +31,15 @@ const ADMINS_DB = path.join(DB_DIR, 'admins.json');
 
 const BOT_NUMBER = process.env.BOT_NUMBER || '';
 const PORT = process.env.PORT || 3000;
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 const logs = [];
 let pairingCode = null;
 let connectionStatus = 'disconnected';
+let globalSock = null;
+
+// Store verify sessions: token -> { groupId, createdAt }
+const verifySessions = new Map();
 
 function addLog(message) {
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' });
@@ -44,61 +49,367 @@ function addLog(message) {
     console.log(entry);
 }
 
-const app = express();
+function generateToken() {
+    return crypto.randomBytes(16).toString('hex');
+}
 
+const app = express();
+app.use(express.json());
+
+// ── Main Panel ──────────────────────────────────────────────
 app.get('/', (req, res) => {
-    const logHtml = logs.slice().reverse().map(l => `<div class="log-entry">${l}</div>`).join('');
-    res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Xyron Rose Manager</title>
-        <style>
-            *{margin:0;padding:0;box-sizing:border-box}
-            body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;padding:20px}
-            .header{text-align:center;padding:30px;border-bottom:2px solid #30363d;margin-bottom:20px}
-            .header h1{color:#58a6ff;font-size:28px}
-            .header p{color:#8b949e;margin-top:5px}
-            .status-box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:20px;text-align:center}
-            .status{font-size:20px;font-weight:bold}
-            .connected{color:#3fb950}.disconnected{color:#f85149}.connecting{color:#d29922}
-            .pairing-box{background:#161b22;border:2px solid #58a6ff;border-radius:10px;padding:25px;margin-bottom:20px;text-align:center}
-            .pairing-code{font-size:36px;font-weight:bold;color:#58a6ff;letter-spacing:8px;margin:10px 0}
-            .pairing-note{color:#8b949e;font-size:14px}
-            .logs-container{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;max-height:500px;overflow-y:auto}
-            .logs-container h2{color:#58a6ff;margin-bottom:15px}
-            .log-entry{padding:4px 0;font-size:13px;border-bottom:1px solid #21262d;color:#8b949e;word-break:break-all}
-            .footer{text-align:center;margin-top:30px;color:#484f58}
-        </style>
-        <meta http-equiv="refresh" content="5">
-    </head>
-    <body>
+    const logHtml = logs.slice().reverse().map(l =>
+        `<div class="log-entry">${l}</div>`
+    ).join('');
+
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xyron Rose Manager</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;padding:20px}
+        .header{text-align:center;padding:30px;border-bottom:2px solid #30363d;margin-bottom:20px}
+        .header h1{color:#58a6ff;font-size:28px}
+        .header p{color:#8b949e;margin-top:5px}
+        .status-box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:20px;text-align:center}
+        .status{font-size:20px;font-weight:bold}
+        .connected{color:#3fb950}.disconnected{color:#f85149}.connecting{color:#d29922}
+        .pairing-box{background:#161b22;border:2px solid #58a6ff;border-radius:10px;padding:25px;margin-bottom:20px;text-align:center}
+        .pairing-code{font-size:36px;font-weight:bold;color:#58a6ff;letter-spacing:8px;margin:10px 0}
+        .logs-container{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;max-height:500px;overflow-y:auto}
+        .logs-container h2{color:#58a6ff;margin-bottom:15px}
+        .log-entry{padding:4px 0;font-size:13px;border-bottom:1px solid #21262d;color:#8b949e;word-break:break-all}
+        .footer{text-align:center;margin-top:30px;color:#484f58}
+    </style>
+    <meta http-equiv="refresh" content="5">
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Xyron Rose Manager</h1>
+        <p>Advanced WhatsApp Group Management Bot by Prime Xyron</p>
+    </div>
+    <div class="status-box">
+        <div>Connection Status:</div>
+        <div class="status ${connectionStatus}">${connectionStatus.toUpperCase()}</div>
+    </div>
+    ${pairingCode ? `
+    <div class="pairing-box">
+        <div>📱 Pairing Code</div>
+        <div class="pairing-code">${pairingCode}</div>
+        <div style="color:#8b949e;font-size:14px">WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number</div>
+    </div>` : ''}
+    <div class="logs-container">
+        <h2>📋 Live Logs</h2>
+        ${logHtml || '<div class="log-entry">No logs yet...</div>'}
+    </div>
+    <div class="footer">
+        <p>© 2024 Xyron Rose Manager | Developer: Prime Xyron | t.me/prime_xyron</p>
+    </div>
+</body>
+</html>`);
+});
+
+// ── Verify Page ─────────────────────────────────────────────
+app.get('/verify/:token', async (req, res) => {
+    const { token } = req.params;
+    const session = verifySessions.get(token);
+
+    if (!session) {
+        return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invalid Link - Xyron Rose</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+        .card{background:#161b22;border:1px solid #f85149;border-radius:16px;padding:40px;text-align:center;max-width:400px;width:90%}
+        .icon{font-size:60px;margin-bottom:20px}
+        h2{color:#f85149;margin-bottom:10px}
+        p{color:#8b949e;font-size:14px}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">❌</div>
+        <h2>Invalid or Expired Link</h2>
+        <p>This verification link is invalid or has expired.<br>Please use <strong>!!verify</strong> again in your WhatsApp group to get a new link.</p>
+    </div>
+</body>
+</html>`);
+    }
+
+    // Check if expired (15 minutes)
+    if (Date.now() - session.createdAt > 15 * 60 * 1000) {
+        verifySessions.delete(token);
+        return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Expired - Xyron Rose</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+        .card{background:#161b22;border:1px solid #d29922;border-radius:16px;padding:40px;text-align:center;max-width:400px;width:90%}
+        .icon{font-size:60px;margin-bottom:20px}
+        h2{color:#d29922;margin-bottom:10px}
+        p{color:#8b949e;font-size:14px}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">⏰</div>
+        <h2>Link Expired</h2>
+        <p>This verification link has expired (15 min limit).<br>Please use <strong>!!verify</strong> again in WhatsApp.</p>
+    </div>
+</body>
+</html>`);
+    }
+
+    let groupName = 'Unknown Group';
+    let participants = [];
+    let botNumber = '';
+    let botRawId = '';
+
+    try {
+        if (globalSock && globalSock.user) {
+            botRawId = globalSock.user.id || '';
+            botNumber = botRawId.replace(/[^0-9]/g, '');
+            const metadata = await globalSock.groupMetadata(session.groupId);
+            groupName = metadata.subject || 'Unknown Group';
+            participants = metadata.participants || [];
+        }
+    } catch (e) {
+        addLog(`Verify page metadata error: ${e.message}`);
+    }
+
+    const botParticipant = participants.find(p => {
+        const pNum = p.id.replace(/[^0-9]/g, '');
+        return pNum === botNumber;
+    });
+
+    const isAdmin = botParticipant
+        ? (botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin')
+        : false;
+
+    const statusColor = isAdmin ? '#3fb950' : '#f85149';
+    const statusIcon = isAdmin ? '✅' : '❌';
+    const statusText = isAdmin ? 'Bot has Admin Rights' : 'Bot does NOT have Admin Rights';
+    const statusBg = isAdmin ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)';
+    const statusBorder = isAdmin ? '#3fb950' : '#f85149';
+
+    const participantRows = participants.map(p => {
+        const pNum = p.id.replace(/[^0-9]/g, '');
+        const isBot = pNum === botNumber;
+        const adminBadge = p.admin
+            ? `<span style="background:${p.admin === 'superadmin' ? '#d29922' : '#58a6ff'};color:#0d1117;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:bold">${p.admin === 'superadmin' ? '👑 Owner' : '⚡ Admin'}</span>`
+            : `<span style="background:#21262d;color:#8b949e;padding:2px 8px;border-radius:20px;font-size:11px">Member</span>`;
+        const botBadge = isBot
+            ? `<span style="background:#58a6ff;color:#0d1117;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:bold;margin-left:4px">🤖 BOT</span>`
+            : '';
+        return `<tr style="border-bottom:1px solid #21262d;${isBot ? 'background:rgba(88,166,255,0.05)' : ''}">
+            <td style="padding:10px;font-size:13px;color:${isBot ? '#58a6ff' : '#c9d1d9'}">${p.id}${botBadge}</td>
+            <td style="padding:10px;text-align:center">${adminBadge}</td>
+        </tr>`;
+    }).join('');
+
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Bot - ${groupName}</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',sans-serif;padding:20px;min-height:100vh}
+        .container{max-width:700px;margin:0 auto}
+        .header{text-align:center;padding:30px 0;border-bottom:1px solid #30363d;margin-bottom:24px}
+        .header h1{color:#58a6ff;font-size:24px;margin-bottom:6px}
+        .header p{color:#8b949e;font-size:14px}
+        .status-card{border-radius:14px;padding:24px;text-align:center;margin-bottom:24px;border:2px solid ${statusBorder};background:${statusBg}}
+        .status-icon{font-size:48px;margin-bottom:12px}
+        .status-title{font-size:20px;font-weight:bold;color:${statusColor};margin-bottom:6px}
+        .group-name{color:#8b949e;font-size:14px}
+        .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+        .info-box{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;text-align:center}
+        .info-box .label{color:#8b949e;font-size:12px;margin-bottom:4px}
+        .info-box .value{color:#c9d1d9;font-size:14px;font-weight:bold;word-break:break-all}
+        .verify-btn{width:100%;padding:16px;background:#238636;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;margin-bottom:24px;transition:all 0.2s}
+        .verify-btn:hover{background:#2ea043}
+        .verify-btn:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
+        .verify-btn.checking{background:#d29922}
+        .result-box{display:none;border-radius:10px;padding:16px;margin-bottom:24px;text-align:center;font-weight:bold;font-size:15px}
+        .result-box.success{background:rgba(63,185,80,0.1);border:1px solid #3fb950;color:#3fb950}
+        .result-box.fail{background:rgba(248,81,73,0.1);border:1px solid #f85149;color:#f85149}
+        .participants-card{background:#161b22;border:1px solid #30363d;border-radius:14px;overflow:hidden;margin-bottom:24px}
+        .participants-card h3{padding:16px 20px;border-bottom:1px solid #30363d;color:#58a6ff;font-size:15px}
+        table{width:100%;border-collapse:collapse}
+        th{padding:10px;background:#21262d;color:#8b949e;font-size:12px;text-align:left}
+        .footer{text-align:center;color:#484f58;font-size:13px;padding:20px 0}
+        .badge-admin{display:inline-block;background:rgba(88,166,255,0.15);color:#58a6ff;padding:3px 10px;border-radius:20px;font-size:12px}
+        @media(max-width:500px){.info-grid{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+    <div class="container">
         <div class="header">
             <h1>🤖 Xyron Rose Manager</h1>
-            <p>Advanced WhatsApp Group Management Bot by Prime Xyron</p>
+            <p>Bot Admin Verification Panel</p>
         </div>
-        <div class="status-box">
-            <div>Connection Status:</div>
-            <div class="status ${connectionStatus}">${connectionStatus.toUpperCase()}</div>
+
+        <div class="status-card">
+            <div class="status-icon">${statusIcon}</div>
+            <div class="status-title">${statusText}</div>
+            <div class="group-name">🏷️ Group: <strong style="color:#c9d1d9">${groupName}</strong></div>
         </div>
-        ${pairingCode ? `
-        <div class="pairing-box">
-            <div>📱 Pairing Code</div>
-            <div class="pairing-code">${pairingCode}</div>
-            <div class="pairing-note">WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number</div>
-        </div>` : ''}
-        <div class="logs-container">
-            <h2>📋 Live Logs</h2>
-            ${logHtml || '<div class="log-entry">No logs yet...</div>'}
+
+        <div class="info-grid">
+            <div class="info-box">
+                <div class="label">Bot Raw ID</div>
+                <div class="value" style="font-size:11px">${botRawId || 'N/A'}</div>
+            </div>
+            <div class="info-box">
+                <div class="label">Bot Number</div>
+                <div class="value">${botNumber || 'N/A'}</div>
+            </div>
+            <div class="info-box">
+                <div class="label">Total Members</div>
+                <div class="value">${participants.length}</div>
+            </div>
+            <div class="info-box">
+                <div class="label">Bot Found in Group</div>
+                <div class="value" style="color:${botParticipant ? '#3fb950' : '#f85149'}">${botParticipant ? '✅ Yes' : '❌ No'}</div>
+            </div>
         </div>
+
+        <button class="verify-btn" id="verifyBtn" onclick="runVerify()">
+            🔍 Verify Bot Admin Status Now
+        </button>
+
+        <div class="result-box" id="resultBox"></div>
+
+        <div class="participants-card">
+            <h3>👥 Group Participants (${participants.length})</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>JID / Number</th>
+                        <th style="text-align:center">Role</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${participantRows || '<tr><td colspan="2" style="padding:20px;text-align:center;color:#8b949e">No participants found</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+
         <div class="footer">
-            <p>© 2024 Xyron Rose Manager | Developer: Prime Xyron | t.me/prime_xyron</p>
+            <p>🤖 Xyron Rose Manager | Developer: Prime Xyron | t.me/prime_xyron</p>
+            <p style="margin-top:4px">Link expires in 15 minutes from generation</p>
         </div>
-    </body>
-    </html>
-    `);
+    </div>
+
+    <script>
+        async function runVerify() {
+            const btn = document.getElementById('verifyBtn');
+            const resultBox = document.getElementById('resultBox');
+
+            btn.disabled = true;
+            btn.className = 'verify-btn checking';
+            btn.textContent = '⏳ Checking...';
+            resultBox.style.display = 'none';
+
+            try {
+                const res = await fetch('/verify/${token}/check', { method: 'POST' });
+                const data = await res.json();
+
+                resultBox.style.display = 'block';
+
+                if (data.isAdmin) {
+                    resultBox.className = 'result-box success';
+                    resultBox.innerHTML = '✅ Verified! Bot has admin rights. All features are operational!';
+                    btn.style.background = '#3fb950';
+                    btn.textContent = '✅ Verification Complete';
+                } else if (!data.botFound) {
+                    resultBox.className = 'result-box fail';
+                    resultBox.innerHTML = '❌ Bot was not found in this group! Make sure the bot is in the group.';
+                    btn.className = 'verify-btn';
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Verify Bot Admin Status Now';
+                } else {
+                    resultBox.className = 'result-box fail';
+                    resultBox.innerHTML = '❌ Bot is in the group but does NOT have admin rights. Please promote the bot to admin in WhatsApp.';
+                    btn.className = 'verify-btn';
+                    btn.disabled = false;
+                    btn.textContent = '🔄 Check Again';
+                }
+            } catch (e) {
+                resultBox.style.display = 'block';
+                resultBox.className = 'result-box fail';
+                resultBox.innerHTML = '❌ Network error. Please try again.';
+                btn.className = 'verify-btn';
+                btn.disabled = false;
+                btn.textContent = '🔍 Verify Bot Admin Status Now';
+            }
+        }
+    </script>
+</body>
+</html>`);
+});
+
+// ── Verify API Endpoint ─────────────────────────────────────
+app.post('/verify/:token/check', async (req, res) => {
+    const { token } = req.params;
+    const session = verifySessions.get(token);
+
+    if (!session) {
+        return res.json({ success: false, error: 'Invalid token', isAdmin: false, botFound: false });
+    }
+
+    if (Date.now() - session.createdAt > 15 * 60 * 1000) {
+        verifySessions.delete(token);
+        return res.json({ success: false, error: 'Expired', isAdmin: false, botFound: false });
+    }
+
+    try {
+        if (!globalSock || !globalSock.user) {
+            return res.json({ success: false, error: 'Bot not connected', isAdmin: false, botFound: false });
+        }
+
+        const botNumber = globalSock.user.id.replace(/[^0-9]/g, '');
+        const metadata = await globalSock.groupMetadata(session.groupId);
+        const participants = metadata.participants || [];
+
+        const botParticipant = participants.find(p => {
+            const pNum = p.id.replace(/[^0-9]/g, '');
+            return pNum === botNumber;
+        });
+
+        if (!botParticipant) {
+            return res.json({ success: false, isAdmin: false, botFound: false, groupName: metadata.subject });
+        }
+
+        const isAdmin = botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin';
+
+        addLog(`Verify API: Bot in "${metadata.subject}" - Found: true | Admin: ${isAdmin} | Role: ${botParticipant.admin}`);
+
+        return res.json({
+            success: true,
+            isAdmin: isAdmin,
+            botFound: true,
+            adminRole: botParticipant.admin || 'none',
+            groupName: metadata.subject,
+            totalMembers: participants.length
+        });
+
+    } catch (e) {
+        addLog(`Verify API error: ${e.message}`);
+        return res.json({ success: false, error: e.message, isAdmin: false, botFound: false });
+    }
 });
 
 app.listen(PORT, () => {
@@ -154,13 +465,7 @@ async function getGroupSettings(groupId) {
     let changed = false;
     for (const key of Object.keys(DEFAULT_GROUP_SETTINGS)) {
         if (db[groupId][key] === undefined) {
-            if (key === 'filters') {
-                db[groupId][key] = {};
-            } else if (key === 'reactionEmojis') {
-                db[groupId][key] = [...DEFAULT_GROUP_SETTINGS[key]];
-            } else {
-                db[groupId][key] = DEFAULT_GROUP_SETTINGS[key];
-            }
+            db[groupId][key] = key === 'filters' ? {} : key === 'reactionEmojis' ? [...DEFAULT_GROUP_SETTINGS[key]] : DEFAULT_GROUP_SETTINGS[key];
             changed = true;
         }
     }
@@ -232,49 +537,45 @@ function getBotJid(sock) {
 
 async function fetchGroupMetadataSafe(sock, groupId) {
     try {
-        const metadata = await sock.groupMetadata(groupId);
-        return metadata;
+        return await sock.groupMetadata(groupId);
     } catch (e) {
-        addLog(`Failed to fetch metadata for ${groupId}: ${e.message}`);
+        addLog(`Metadata error ${groupId}: ${e.message}`);
         return null;
     }
 }
 
 async function isBotAdmin(sock, groupId) {
-    const metadata = await fetchGroupMetadataSafe(sock, groupId);
-    if (!metadata) return false;
-
-    const botJid = getBotJid(sock);
-    const botNumber = botJid.split('@')[0];
-
-    for (const participant of metadata.participants) {
-        const pNumber = participant.id.split('@')[0].split(':')[0];
-        if (pNumber === botNumber) {
-            if (participant.admin === 'admin' || participant.admin === 'superadmin') {
-                return true;
+    try {
+        const metadata = await fetchGroupMetadataSafe(sock, groupId);
+        if (!metadata) return false;
+        const botNumber = (sock.user?.id || '').replace(/[^0-9]/g, '');
+        for (const p of metadata.participants) {
+            const pNum = p.id.replace(/[^0-9]/g, '');
+            if (pNum === botNumber) {
+                return p.admin === 'admin' || p.admin === 'superadmin';
             }
-            return false;
         }
+        return false;
+    } catch (e) {
+        return false;
     }
-    return false;
 }
 
 async function isGroupAdmin(sock, groupId, userJid) {
-    const metadata = await fetchGroupMetadataSafe(sock, groupId);
-    if (!metadata) return false;
-
-    const userNumber = normalizeJid(userJid).split('@')[0];
-
-    for (const participant of metadata.participants) {
-        const pNumber = participant.id.split('@')[0].split(':')[0];
-        if (pNumber === userNumber) {
-            if (participant.admin === 'admin' || participant.admin === 'superadmin') {
-                return true;
+    try {
+        const metadata = await fetchGroupMetadataSafe(sock, groupId);
+        if (!metadata) return false;
+        const userNumber = userJid.replace(/[^0-9]/g, '');
+        for (const p of metadata.participants) {
+            const pNum = p.id.replace(/[^0-9]/g, '');
+            if (pNum === userNumber) {
+                return p.admin === 'admin' || p.admin === 'superadmin';
             }
-            return false;
         }
+        return false;
+    } catch (e) {
+        return false;
     }
-    return false;
 }
 
 async function isAuthorized(sock, groupId, userJid) {
@@ -294,13 +595,10 @@ function getMessageText(msg) {
     if (!msg || !msg.message) return '';
     const m = msg.message;
     if (m.conversation) return m.conversation;
-    if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
-    if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
-    if (m.videoMessage && m.videoMessage.caption) return m.videoMessage.caption;
-    if (m.documentMessage && m.documentMessage.caption) return m.documentMessage.caption;
-    if (m.buttonsResponseMessage) return m.buttonsResponseMessage.selectedButtonId || '';
-    if (m.listResponseMessage) return m.listResponseMessage.singleSelectReply?.selectedRowId || '';
-    if (m.templateButtonReplyMessage) return m.templateButtonReplyMessage.selectedId || '';
+    if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
+    if (m.imageMessage?.caption) return m.imageMessage.caption;
+    if (m.videoMessage?.caption) return m.videoMessage.caption;
+    if (m.documentMessage?.caption) return m.documentMessage.caption;
     return '';
 }
 
@@ -309,15 +607,10 @@ function getTargetJid(msg, args) {
         || msg.message?.imageMessage?.contextInfo
         || msg.message?.videoMessage?.contextInfo;
 
-    if (contextInfo && contextInfo.participant) {
-        return normalizeJid(contextInfo.participant);
-    }
+    if (contextInfo?.participant) return normalizeJid(contextInfo.participant);
+    if (contextInfo?.mentionedJid?.length > 0) return normalizeJid(contextInfo.mentionedJid[0]);
 
-    if (contextInfo && contextInfo.mentionedJid && contextInfo.mentionedJid.length > 0) {
-        return normalizeJid(contextInfo.mentionedJid[0]);
-    }
-
-    if (args && args.length > 0) {
+    if (args?.length > 0) {
         for (const arg of args) {
             const cleaned = arg.replace(/[^0-9]/g, '');
             if (cleaned.length >= 10) {
@@ -326,19 +619,15 @@ function getTargetJid(msg, args) {
             }
         }
     }
-
     return null;
 }
 
 function isSelfMessage(sock, msg) {
     if (msg.key.fromMe) return true;
-    const botJid = getBotJid(sock);
+    const botNumber = (sock.user?.id || '').replace(/[^0-9]/g, '');
     const senderJid = msg.key.participant || msg.key.remoteJid;
-    if (normalizeJid(senderJid) === botJid) return true;
-    const botNumber = botJid.split('@')[0];
-    const senderNumber = normalizeJid(senderJid).split('@')[0];
-    if (botNumber === senderNumber) return true;
-    return false;
+    const senderNumber = senderJid.replace(/[^0-9]/g, '');
+    return botNumber === senderNumber;
 }
 
 async function startBot() {
@@ -363,17 +652,15 @@ async function startBot() {
         markOnlineOnConnect: true
     });
 
+    globalSock = sock;
+
     if (!sock.authState.creds.registered) {
         addLog('Generating pairing code...');
         connectionStatus = 'connecting';
         await new Promise(resolve => setTimeout(resolve, 3000));
-
         try {
             let phoneNumber = BOT_NUMBER.replace(/[^0-9]/g, '');
-            if (phoneNumber.length === 11 && phoneNumber.startsWith('0')) {
-                phoneNumber = '88' + phoneNumber;
-            }
-            addLog(`Requesting pairing code for: ${phoneNumber}`);
+            if (phoneNumber.length === 11 && phoneNumber.startsWith('0')) phoneNumber = '88' + phoneNumber;
             const code = await sock.requestPairingCode(phoneNumber);
             pairingCode = code;
             addLog(`Pairing Code: ${code}`);
@@ -386,33 +673,24 @@ async function startBot() {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === 'open') {
             connectionStatus = 'connected';
             pairingCode = null;
-            addLog('Successfully connected to WhatsApp!');
-            addLog(`Bot JID: ${sock.user?.id}`);
-            addLog(`Normalized: ${getBotJid(sock)}`);
+            globalSock = sock;
+            addLog('Connected to WhatsApp!');
+            addLog(`Bot ID: ${sock.user?.id}`);
         }
-
         if (connection === 'close') {
             connectionStatus = 'disconnected';
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            addLog(`Connection closed. Code: ${statusCode}`);
-
-            if (statusCode === DisconnectReason.loggedOut) {
-                addLog('Logged out. Clearing auth...');
+            const code = lastDisconnect?.error?.output?.statusCode;
+            addLog(`Disconnected. Code: ${code}`);
+            if (code === DisconnectReason.loggedOut) {
                 await fs.remove(AUTH_DIR);
-                setTimeout(startBot, 5000);
-            } else {
-                addLog('Reconnecting in 5s...');
-                setTimeout(startBot, 5000);
             }
+            setTimeout(startBot, 5000);
         }
-
         if (connection === 'connecting') {
             connectionStatus = 'connecting';
-            addLog('Connecting...');
         }
     });
 
@@ -420,40 +698,34 @@ async function startBot() {
         try {
             const { id: groupId, participants, action } = event;
             const settings = await getGroupSettings(groupId);
-
             const metadata = await fetchGroupMetadataSafe(sock, groupId);
             if (!metadata) return;
 
             for (const participant of participants) {
                 const userNumber = jidToNumber(participant);
-                const mention = `@${userNumber}`;
-
                 const vars = {
-                    mention: mention,
+                    mention: `@${userNumber}`,
                     shownumber: userNumber,
                     membercount: metadata.participants.length,
                     groupname: metadata.subject || 'Unknown Group'
                 };
-
                 if (action === 'add' && settings.welcome) {
-                    const text = replaceVariables(settings.welcomeMsg, vars);
                     try {
-                        await sock.sendMessage(groupId, { text: text, mentions: [participant] });
-                        addLog(`Welcome sent in: ${metadata.subject}`);
+                        await sock.sendMessage(groupId, {
+                            text: replaceVariables(settings.welcomeMsg, vars),
+                            mentions: [participant]
+                        });
                     } catch (e) {}
                 }
-
                 if (action === 'remove' && settings.goodbye) {
-                    const text = replaceVariables(settings.goodbyeMsg, vars);
                     try {
-                        await sock.sendMessage(groupId, { text: text, mentions: [participant] });
-                        addLog(`Goodbye sent in: ${metadata.subject}`);
+                        await sock.sendMessage(groupId, {
+                            text: replaceVariables(settings.goodbyeMsg, vars),
+                            mentions: [participant]
+                        });
                     } catch (e) {}
                 }
-
-                if (action === 'remove') {
-                    await removeMute(groupId, participant);
-                }
+                if (action === 'remove') await removeMute(groupId, participant);
             }
         } catch (e) {
             addLog(`Participant update error: ${e.message}`);
@@ -467,30 +739,23 @@ async function startBot() {
             try {
                 if (!msg.message) continue;
                 if (msg.key.remoteJid === 'status@broadcast') continue;
-
-                const isGroup = msg.key.remoteJid?.endsWith('@g.us');
-                if (!isGroup) continue;
+                if (!msg.key.remoteJid?.endsWith('@g.us')) continue;
 
                 const groupId = msg.key.remoteJid;
                 const senderJid = msg.key.participant || msg.key.remoteJid;
                 const normalizedSender = normalizeJid(senderJid);
-                const botJid = getBotJid(sock);
                 const selfMsg = isSelfMessage(sock, msg);
 
                 if (msg.messageStubType) {
                     const settings = await getGroupSettings(groupId);
                     if (settings.cleanservice) {
-                        try {
-                            await sock.sendMessage(groupId, { delete: msg.key });
-                        } catch (e) {}
+                        try { await sock.sendMessage(groupId, { delete: msg.key }); } catch (e) {}
                     }
                     continue;
                 }
 
                 const contentType = getContentType(msg.message);
-                if (contentType === 'protocolMessage' || contentType === 'senderKeyDistributionMessage') {
-                    continue;
-                }
+                if (contentType === 'protocolMessage' || contentType === 'senderKeyDistributionMessage') continue;
 
                 const body = getMessageText(msg);
 
@@ -498,10 +763,8 @@ async function startBot() {
                     const muted = await isUserMuted(groupId, normalizedSender);
                     if (muted) {
                         try {
-                            const botAdmin = await isBotAdmin(sock, groupId);
-                            if (botAdmin) {
+                            if (await isBotAdmin(sock, groupId)) {
                                 await sock.sendMessage(groupId, { delete: msg.key });
-                                addLog(`Deleted muted user msg: ${jidToNumber(senderJid)}`);
                             }
                         } catch (e) {}
                         continue;
@@ -510,24 +773,17 @@ async function startBot() {
 
                 if (!selfMsg && body) {
                     const settings = await getGroupSettings(groupId);
-                    if (settings.antilink) {
-                        const hasLink = /chat\.whatsapp\.com|wa\.me/i.test(body);
-                        if (hasLink) {
-                            const senderIsAuth = await isAuthorized(sock, groupId, normalizedSender);
-                            if (!senderIsAuth) {
-                                const botAdmin = await isBotAdmin(sock, groupId);
-                                if (botAdmin) {
-                                    try {
-                                        await sock.sendMessage(groupId, { delete: msg.key });
-                                        await sock.sendMessage(groupId, {
-                                            text: `⚠️ @${jidToNumber(senderJid)}, sharing links is not allowed in this group! Your message has been deleted.`,
-                                            mentions: [senderJid]
-                                        });
-                                        addLog(`Antilink: deleted from ${jidToNumber(senderJid)}`);
-                                    } catch (e) {}
-                                }
-                                continue;
-                            }
+                    if (settings.antilink && /chat\.whatsapp\.com|wa\.me/i.test(body)) {
+                        const senderIsAuth = await isAuthorized(sock, groupId, normalizedSender);
+                        if (!senderIsAuth && await isBotAdmin(sock, groupId)) {
+                            try {
+                                await sock.sendMessage(groupId, { delete: msg.key });
+                                await sock.sendMessage(groupId, {
+                                    text: `⚠️ @${jidToNumber(senderJid)}, sharing links is not allowed! Your message has been deleted.`,
+                                    mentions: [senderJid]
+                                });
+                            } catch (e) {}
+                            continue;
                         }
                     }
                 }
@@ -537,22 +793,17 @@ async function startBot() {
                     if (settings.filters && Object.keys(settings.filters).length > 0) {
                         const lowerBody = body.toLowerCase();
                         let filtered = false;
-
-                        for (const [filterWord, filterReply] of Object.entries(settings.filters)) {
-                            if (lowerBody.includes(filterWord.toLowerCase())) {
+                        for (const [word, reply] of Object.entries(settings.filters)) {
+                            if (lowerBody.includes(word.toLowerCase())) {
                                 const senderIsAuth = await isAuthorized(sock, groupId, normalizedSender);
-                                if (!senderIsAuth) {
-                                    const botAdmin = await isBotAdmin(sock, groupId);
-                                    if (botAdmin) {
-                                        try {
-                                            await sock.sendMessage(groupId, { delete: msg.key });
-                                            await sock.sendMessage(groupId, {
-                                                text: `⚠️ @${jidToNumber(senderJid)}, ${filterReply}`,
-                                                mentions: [senderJid]
-                                            });
-                                            addLog(`Filter "${filterWord}" triggered by ${jidToNumber(senderJid)}`);
-                                        } catch (e) {}
-                                    }
+                                if (!senderIsAuth && await isBotAdmin(sock, groupId)) {
+                                    try {
+                                        await sock.sendMessage(groupId, { delete: msg.key });
+                                        await sock.sendMessage(groupId, {
+                                            text: `⚠️ @${jidToNumber(senderJid)}, ${reply}`,
+                                            mentions: [senderJid]
+                                        });
+                                    } catch (e) {}
                                 }
                                 filtered = true;
                                 break;
@@ -564,11 +815,9 @@ async function startBot() {
 
                 if (!selfMsg) {
                     const settings = await getGroupSettings(groupId);
-                    if (settings.reaction && settings.reactionEmojis && settings.reactionEmojis.length > 0) {
-                        const randomEmoji = settings.reactionEmojis[Math.floor(Math.random() * settings.reactionEmojis.length)];
-                        try {
-                            await sock.sendMessage(groupId, { react: { text: randomEmoji, key: msg.key } });
-                        } catch (e) {}
+                    if (settings.reaction && settings.reactionEmojis?.length > 0) {
+                        const emoji = settings.reactionEmojis[Math.floor(Math.random() * settings.reactionEmojis.length)];
+                        try { await sock.sendMessage(groupId, { react: { text: emoji, key: msg.key } }); } catch (e) {}
                     }
                 }
 
@@ -582,9 +831,7 @@ async function startBot() {
 
                 if (!body || body.length === 0) continue;
 
-                let command = '';
-                let args = [];
-                let prefix = '';
+                let command = '', args = [], prefix = '';
 
                 if (body.startsWith('!!')) {
                     prefix = '!!';
@@ -601,80 +848,68 @@ async function startBot() {
                     const rest = body.slice(1).trim().split(/\s+/);
                     command = rest.shift()?.toLowerCase() || '';
                     args = rest;
-                } else {
-                    continue;
-                }
+                } else continue;
 
                 if (!command) continue;
-
-                addLog(`CMD: ${prefix}${command} | Args: [${args.join(', ')}] | From: ${jidToNumber(senderJid)}`);
+                addLog(`CMD: ${prefix}${command} | From: ${jidToNumber(senderJid)}`);
 
                 if (prefix === '!!' && command === 'help') {
-                    const helpText = `╔═══════════════════════════════════╗
+                    await sock.sendMessage(groupId, {
+                        text: `╔═══════════════════════════════════╗
 ║     🤖 *XYRON ROSE MANAGER*       ║
-║   Group Management Bot v2.0       ║
+║   Group Management Bot v2.1       ║
 ╚═══════════════════════════════════╝
-
-📋 *COMMAND LIST:*
 
 ━━━ 👑 *SETUP & ADMIN* ━━━
 • \`!addme\` — Register as group owner
 • \`!!goback\` — Bot leaves group (Owner only)
-• \`!!verify\` — Check if bot has admin rights
+• \`!!verify\` — Get bot verification link
 • \`!cleanservice on/off\` — Auto-delete system msgs
 
 ━━━ 👋 *WELCOME & GOODBYE* ━━━
-• \`.welcome on/off\` — Toggle welcome messages
-• \`.goodbye on/off\` — Toggle goodbye messages
-• \`.setwelcome [text]\` — Set welcome message
-• \`.setgoodbye [text]\` — Set goodbye message
+• \`.welcome on/off\`
+• \`.goodbye on/off\`
+• \`.setwelcome [text]\`
+• \`.setgoodbye [text]\`
 
-📝 *Variables:*
-\`{mention}\` \`{shownumber}\` \`{membercount}\`
-\`{time}\` \`{date}\` \`{groupname}\`
+📝 *Variables:* {mention} {shownumber} {membercount} {time} {date} {groupname}
 
 ━━━ 🔇 *MUTE & SECURITY* ━━━
-• \`.mute [time] [target]\` — Mute user (10m/1h/1d)
-• \`.unmute [target]\` — Unmute user
-• \`.antilink on/off\` — Block links
-• \`.filter [word] [reply]\` — Set word filter
-• \`.removefilter [word]\` — Remove filter
+• \`.mute [time] [target]\` — 10s/30m/1h/1d
+• \`.unmute [target]\`
+• \`.antilink on/off\`
+• \`.filter [word] [reply]\`
+• \`.removefilter [word]\`
 
 ━━━ 🛡️ *MODERATION* ━━━
-• \`.promote [target]\` — Promote to admin
-• \`.demote [target]\` — Demote from admin
-• \`.kick [target]\` — Remove from group
-• \`.tagall [text]\` — Tag all members
+• \`.promote [target]\`
+• \`.demote [target]\`
+• \`.kick [target]\`
+• \`.tagall [text]\`
 
-━━━ 😁 *AUTO REACTION* ━━━
-• \`!reaction on/off\` — Toggle reactions
-• \`.reaction set [emojis]\` — Set emojis
+━━━ 😁 *REACTION* ━━━
+• \`!reaction on/off\`
+• \`.reaction set [emojis]\`
 
-━━━━━━━━━━━━━━━━━━━━━━━
 👨‍💻 *Developer:* Prime Xyron
-📢 *Telegram:* t.me/prime_xyron
-━━━━━━━━━━━━━━━━━━━━━━━`;
-
-                    await sock.sendMessage(groupId, { text: helpText }, { quoted: msg });
+📢 t.me/prime_xyron`
+                    }, { quoted: msg });
                     continue;
                 }
 
                 if (prefix === '!!' && command === 'verify') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    const metadata = await fetchGroupMetadataSafe(sock, groupId);
-                    const groupName = metadata ? metadata.subject : 'Unknown';
+                    const token = generateToken();
+                    verifySessions.set(token, { groupId, createdAt: Date.now() });
 
-                    if (botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: `✅ *Verification Successful!*\n\n🤖 Bot has admin rights in this group.\n🏷️ Group: ${groupName}\n\nAll features are fully operational. You can now use all commands.`
-                        }, { quoted: msg });
-                        addLog(`Verify: Bot IS admin in ${groupName}`);
-                    } else {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ *Verification Failed!*\n\n🤖 Bot does NOT have admin rights in this group.\n🏷️ Group: ${groupName}\n\n⚠️ Please promote the bot to admin to use features like:\n• Antilink\n• Filter\n• Mute\n• Kick/Promote\n• Clean Service`
-                        }, { quoted: msg });
-                        addLog(`Verify: Bot is NOT admin in ${groupName}`);
-                    }
+                    setTimeout(() => verifySessions.delete(token), 15 * 60 * 1000);
+
+                    const verifyUrl = `${BASE_URL}/verify/${token}`;
+
+                    await sock.sendMessage(groupId, {
+                        text: `🔍 *Bot Verification Link*\n\n📎 Click the link below to verify bot admin status:\n\n${verifyUrl}\n\n⏰ This link expires in *15 minutes*.\n\n💡 On the page, click *"Verify Bot Admin Status Now"* button to check.`
+                    }, { quoted: msg });
+
+                    addLog(`Verify link generated for group: ${groupId}`);
                     continue;
                 }
 
@@ -682,16 +917,15 @@ async function startBot() {
                     const existingOwner = await getOwner(groupId);
                     if (existingOwner) {
                         await sock.sendMessage(groupId, {
-                            text: `⚠️ This group already has a registered owner: @${jidToNumber(existingOwner)}\n\nOnly one owner per group is allowed.`,
+                            text: `⚠️ This group already has a registered owner: @${jidToNumber(existingOwner)}`,
                             mentions: [existingOwner]
                         }, { quoted: msg });
                     } else {
                         await setOwner(groupId, normalizedSender);
                         await sock.sendMessage(groupId, {
-                            text: `✅ Success! @${jidToNumber(senderJid)} is now the registered owner of this group.\n\nYou can now use all bot commands.`,
+                            text: `✅ @${jidToNumber(senderJid)} is now the registered owner!`,
                             mentions: [senderJid]
                         }, { quoted: msg });
-                        addLog(`Owner registered: ${jidToNumber(senderJid)} for ${groupId}`);
                     }
                     continue;
                 }
@@ -705,23 +939,13 @@ async function startBot() {
                 }
 
                 if (prefix === '!!' && command === 'goback') {
-                    const isOwner = await isRegisteredOwner(groupId, normalizedSender);
-                    if (!isOwner) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Only the registered owner can make the bot leave.'
-                        }, { quoted: msg });
+                    if (!await isRegisteredOwner(groupId, normalizedSender)) {
+                        await sock.sendMessage(groupId, { text: '❌ Only the registered owner can make the bot leave.' }, { quoted: msg });
                         continue;
                     }
-                    await sock.sendMessage(groupId, {
-                        text: '👋 Goodbye! Xyron Rose Manager is leaving...\n🤖 Add me back anytime!\n📢 t.me/prime_xyron'
-                    });
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    try {
-                        await sock.groupLeave(groupId);
-                        addLog(`Bot left group: ${groupId}`);
-                    } catch (e) {
-                        addLog(`Leave error: ${e.message}`);
-                    }
+                    await sock.sendMessage(groupId, { text: '👋 Goodbye! Xyron Rose Manager is leaving...\n📢 t.me/prime_xyron' });
+                    await new Promise(r => setTimeout(r, 2000));
+                    try { await sock.groupLeave(groupId); } catch (e) {}
                     continue;
                 }
 
@@ -729,19 +953,13 @@ async function startBot() {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { cleanservice: true });
-                        await sock.sendMessage(groupId, {
-                            text: '✅ Clean Service *enabled*.\nSystem messages will be auto-deleted.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '✅ Clean Service *enabled*.' }, { quoted: msg });
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { cleanservice: false });
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Clean Service *disabled*.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Clean Service *disabled*.' }, { quoted: msg });
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`!cleanservice on\` or \`!cleanservice off\`\nCurrent: ${s.cleanservice ? '✅ ON' : '❌ OFF'}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 Usage: \`!cleanservice on/off\`\nCurrent: ${s.cleanservice ? '✅ ON' : '❌ OFF'}` }, { quoted: msg });
                     }
                     continue;
                 }
@@ -750,19 +968,13 @@ async function startBot() {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { welcome: true });
-                        await sock.sendMessage(groupId, {
-                            text: '✅ Welcome messages *enabled*!'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '✅ Welcome messages *enabled*!' }, { quoted: msg });
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { welcome: false });
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Welcome messages *disabled*.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Welcome messages *disabled*.' }, { quoted: msg });
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.welcome on\` or \`.welcome off\`\nCurrent: ${s.welcome ? '✅ ON' : '❌ OFF'}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 \`.welcome on/off\`\nCurrent: ${s.welcome ? '✅ ON' : '❌ OFF'}` }, { quoted: msg });
                     }
                     continue;
                 }
@@ -771,206 +983,142 @@ async function startBot() {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { goodbye: true });
-                        await sock.sendMessage(groupId, {
-                            text: '✅ Goodbye messages *enabled*!'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '✅ Goodbye messages *enabled*!' }, { quoted: msg });
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { goodbye: false });
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Goodbye messages *disabled*.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Goodbye messages *disabled*.' }, { quoted: msg });
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.goodbye on\` or \`.goodbye off\`\nCurrent: ${s.goodbye ? '✅ ON' : '❌ OFF'}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 \`.goodbye on/off\`\nCurrent: ${s.goodbye ? '✅ ON' : '❌ OFF'}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'setwelcome') {
-                    const welcomeText = args.join(' ').trim();
-                    if (!welcomeText) {
+                    const text = args.join(' ').trim();
+                    if (!text) {
                         await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.setwelcome [message]\`\n\n📌 *Variables:*\n• \`{mention}\` — Tags user\n• \`{shownumber}\` — Phone number\n• \`{membercount}\` — Member count\n• \`{groupname}\` — Group name\n• \`{time}\` — Current time\n• \`{date}\` — Current date\n\n📝 *Example:*\n\`.setwelcome 🎉 Welcome {mention} to {groupname}!\``
+                            text: `📝 *Usage:* \`.setwelcome [message]\`\n\n📌 Variables:\n{mention} {shownumber} {membercount} {groupname} {time} {date}`
                         }, { quoted: msg });
                     } else {
-                        await updateGroupSettings(groupId, { welcomeMsg: welcomeText });
-                        const preview = replaceVariables(welcomeText, {
-                            mention: '@User', shownumber: '88019XXXXXXXX', membercount: 100, groupname: 'Test Group'
-                        });
-                        await sock.sendMessage(groupId, {
-                            text: `✅ Welcome message set!\n\n📝 *Preview:*\n${preview}`
-                        }, { quoted: msg });
+                        await updateGroupSettings(groupId, { welcomeMsg: text });
+                        const preview = replaceVariables(text, { mention: '@User', shownumber: '88019XXXXXXXX', membercount: 100, groupname: 'Test Group' });
+                        await sock.sendMessage(groupId, { text: `✅ Welcome message set!\n\n📝 Preview:\n${preview}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'setgoodbye') {
-                    const goodbyeText = args.join(' ').trim();
-                    if (!goodbyeText) {
+                    const text = args.join(' ').trim();
+                    if (!text) {
                         await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.setgoodbye [message]\`\n\n📌 *Variables:*\n• \`{mention}\` — Tags user\n• \`{shownumber}\` — Phone number\n• \`{membercount}\` — Remaining count\n• \`{groupname}\` — Group name\n• \`{time}\` — Time\n• \`{date}\` — Date`
+                            text: `📝 *Usage:* \`.setgoodbye [message]\`\n\n📌 Variables:\n{mention} {shownumber} {membercount} {groupname} {time} {date}`
                         }, { quoted: msg });
                     } else {
-                        await updateGroupSettings(groupId, { goodbyeMsg: goodbyeText });
-                        const preview = replaceVariables(goodbyeText, {
-                            mention: '@User', shownumber: '88019XXXXXXXX', membercount: 99, groupname: 'Test Group'
-                        });
-                        await sock.sendMessage(groupId, {
-                            text: `✅ Goodbye message set!\n\n📝 *Preview:*\n${preview}`
-                        }, { quoted: msg });
+                        await updateGroupSettings(groupId, { goodbyeMsg: text });
+                        const preview = replaceVariables(text, { mention: '@User', shownumber: '88019XXXXXXXX', membercount: 99, groupname: 'Test Group' });
+                        await sock.sendMessage(groupId, { text: `✅ Goodbye message set!\n\n📝 Preview:\n${preview}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'mute') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    if (!botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ Bot must be admin to mute users! Use `!!verify` to check.'
-                        }, { quoted: msg });
+                    if (!await isBotAdmin(sock, groupId)) {
+                        await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin! Use `!!verify` to check.' }, { quoted: msg });
                         continue;
                     }
-
                     if (args.length < 1) {
-                        await sock.sendMessage(groupId, {
-                            text: `📝 *Usage:* \`.mute [time] [target]\`\n\n⏱️ *Time:* 10s, 30m, 1h, 1d\n👤 *Target:* Reply to msg OR phone number\n\n📝 *Examples:*\n• \`.mute 30m\` (reply to someone)\n• \`.mute 1h 01912345678\``
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 *Usage:* \`.mute [time] [target]\`\n⏱️ Time: 10s, 30m, 1h, 1d\n👤 Target: Reply or phone number` }, { quoted: msg });
                         continue;
                     }
-
                     const timeStr = args[0];
                     const duration = parseTimeString(timeStr);
                     if (!duration) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Invalid time! Use: `10s`, `30m`, `1h`, `1d`'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Invalid time! Use: 10s, 30m, 1h, 1d' }, { quoted: msg });
                         continue;
                     }
-
                     const targetJid = getTargetJid(msg, args.slice(1));
                     if (!targetJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a number.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Target not found! Reply or provide a number.' }, { quoted: msg });
                         continue;
                     }
-
-                    if (normalizeJid(targetJid).split('@')[0] === botJid.split('@')[0]) {
+                    if (targetJid.replace(/[^0-9]/g, '') === (sock.user?.id || '').replace(/[^0-9]/g, '')) {
                         await sock.sendMessage(groupId, { text: '❌ Cannot mute the bot!' }, { quoted: msg });
                         continue;
                     }
-
-                    const targetIsAdmin = await isGroupAdmin(sock, groupId, targetJid);
-                    if (targetIsAdmin) {
+                    if (await isGroupAdmin(sock, groupId, targetJid)) {
                         await sock.sendMessage(groupId, { text: '❌ Cannot mute a group admin!' }, { quoted: msg });
                         continue;
                     }
-
                     const expiresAt = Date.now() + duration;
                     await setMute(groupId, targetJid, expiresAt);
-                    const expiryDate = new Date(expiresAt).toLocaleString('en-US', { timeZone: 'Asia/Dhaka' });
-
+                    const expiry = new Date(expiresAt).toLocaleString('en-US', { timeZone: 'Asia/Dhaka' });
                     await sock.sendMessage(groupId, {
-                        text: `🔇 *User Muted!*\n\n👤 User: @${jidToNumber(targetJid)}\n⏱️ Duration: ${timeStr}\n📅 Expires: ${expiryDate}\n\n⚠️ All their messages will be auto-deleted.`,
+                        text: `🔇 *User Muted!*\n\n👤 @${jidToNumber(targetJid)}\n⏱️ Duration: ${timeStr}\n📅 Expires: ${expiry}`,
                         mentions: [targetJid]
                     }, { quoted: msg });
-                    addLog(`Muted: ${jidToNumber(targetJid)} for ${timeStr}`);
                     continue;
                 }
 
                 if (prefix === '.' && command === 'unmute') {
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a number.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Target not found!' }, { quoted: msg });
                         continue;
                     }
-
                     const removed = await removeMute(groupId, targetJid);
-                    if (removed) {
-                        await sock.sendMessage(groupId, {
-                            text: `🔊 *User Unmuted!*\n\n👤 User: @${jidToNumber(targetJid)}\n✅ They can send messages again.`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
-                    } else {
-                        await sock.sendMessage(groupId, {
-                            text: `ℹ️ @${jidToNumber(targetJid)} is not muted.`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
-                    }
+                    await sock.sendMessage(groupId, {
+                        text: removed
+                            ? `🔊 @${jidToNumber(targetJid)} has been unmuted! ✅`
+                            : `ℹ️ @${jidToNumber(targetJid)} is not muted.`,
+                        mentions: [targetJid]
+                    }, { quoted: msg });
                     continue;
                 }
 
                 if (prefix === '.' && command === 'antilink') {
                     const toggle = args[0]?.toLowerCase();
                     if (toggle === 'on') {
-                        const botAdmin = await isBotAdmin(sock, groupId);
-                        if (!botAdmin) {
-                            await sock.sendMessage(groupId, {
-                                text: '⚠️ Bot must be admin first! Use `!!verify` to check.'
-                            }, { quoted: msg });
+                        if (!await isBotAdmin(sock, groupId)) {
+                            await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin first! Use `!!verify`.' }, { quoted: msg });
                             continue;
                         }
                         await updateGroupSettings(groupId, { antilink: true });
-                        await sock.sendMessage(groupId, {
-                            text: '✅ Antilink *enabled*!\nMessages with WhatsApp links will be deleted.\n\n⚠️ Admins & owner are exempt.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '✅ Antilink *enabled*! Links will be auto-deleted.\n⚠️ Admins & owner are exempt.' }, { quoted: msg });
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { antilink: false });
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Antilink *disabled*.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Antilink *disabled*.' }, { quoted: msg });
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`.antilink on\` or \`.antilink off\`\nCurrent: ${s.antilink ? '✅ ON' : '❌ OFF'}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 \`.antilink on/off\`\nCurrent: ${s.antilink ? '✅ ON' : '❌ OFF'}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'filter') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    if (!botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ Bot must be admin to enforce filters! Use `!!verify` to check.'
-                        }, { quoted: msg });
+                    if (!await isBotAdmin(sock, groupId)) {
+                        await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin to enforce filters! Use `!!verify`.' }, { quoted: msg });
                         continue;
                     }
-
                     if (args.length < 2) {
                         const settings = await getGroupSettings(groupId);
                         const filterKeys = Object.keys(settings.filters || {});
-
                         if (filterKeys.length === 0) {
-                            await sock.sendMessage(groupId, {
-                                text: `📝 *Usage:* \`.filter [word] [reply]\`\n\n📝 *Example:* \`.filter spam No spamming!\`\n\n📋 No active filters.\n🗑️ Remove: \`.removefilter [word]\``
-                            }, { quoted: msg });
+                            await sock.sendMessage(groupId, { text: `📝 *Usage:* \`.filter [word] [reply]\`\n\n📋 No active filters.\n🗑️ Remove: \`.removefilter [word]\`` }, { quoted: msg });
                         } else {
                             let listText = '📋 *Active Filters:*\n\n';
-                            for (const [word, reply] of Object.entries(settings.filters)) {
-                                listText += `• *${word}* → ${reply}\n`;
-                            }
-                            listText += `\n📝 Add: \`.filter [word] [reply]\`\n🗑️ Remove: \`.removefilter [word]\``;
+                            for (const [w, r] of Object.entries(settings.filters)) listText += `• *${w}* → ${r}\n`;
                             await sock.sendMessage(groupId, { text: listText }, { quoted: msg });
                         }
                         continue;
                     }
-
                     const filterWord = args[0].toLowerCase();
                     const filterReply = args.slice(1).join(' ');
                     const settings = await getGroupSettings(groupId);
                     const filters = settings.filters || {};
                     filters[filterWord] = filterReply;
-                    await updateGroupSettings(groupId, { filters: filters });
-
-                    await sock.sendMessage(groupId, {
-                        text: `✅ Filter set!\n\n🔤 Word: *${filterWord}*\n💬 Reply: ${filterReply}\n\n⚠️ Messages containing "${filterWord}" will be deleted.`
-                    }, { quoted: msg });
-                    addLog(`Filter added: "${filterWord}" in ${groupId}`);
+                    await updateGroupSettings(groupId, { filters });
+                    await sock.sendMessage(groupId, { text: `✅ Filter set!\n🔤 Word: *${filterWord}*\n💬 Reply: ${filterReply}` }, { quoted: msg });
                     continue;
                 }
 
@@ -979,173 +1127,104 @@ async function startBot() {
                         await sock.sendMessage(groupId, { text: '📝 Usage: `.removefilter [word]`' }, { quoted: msg });
                         continue;
                     }
-
                     const filterWord = args[0].toLowerCase();
                     const settings = await getGroupSettings(groupId);
                     const filters = settings.filters || {};
-
                     if (filters[filterWord]) {
                         delete filters[filterWord];
-                        await updateGroupSettings(groupId, { filters: filters });
-                        await sock.sendMessage(groupId, {
-                            text: `✅ Filter "${filterWord}" removed.`
-                        }, { quoted: msg });
+                        await updateGroupSettings(groupId, { filters });
+                        await sock.sendMessage(groupId, { text: `✅ Filter "${filterWord}" removed.` }, { quoted: msg });
                     } else {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ No filter found: "${filterWord}"`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `❌ No filter found: "${filterWord}"` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'promote') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    if (!botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ Bot must be admin to promote! Use `!!verify` to check.'
-                        }, { quoted: msg });
+                    if (!await isBotAdmin(sock, groupId)) {
+                        await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin! Use `!!verify`.' }, { quoted: msg });
                         continue;
                     }
-
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply to a message or provide a number.\n\nExamples:\n• `.promote` (reply)\n• `.promote 01912345678`'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Target not found! Reply or provide a number.' }, { quoted: msg });
                         continue;
                     }
-
-                    const alreadyAdmin = await isGroupAdmin(sock, groupId, targetJid);
-                    if (alreadyAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: `ℹ️ @${jidToNumber(targetJid)} is already an admin!`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
+                    if (await isGroupAdmin(sock, groupId, targetJid)) {
+                        await sock.sendMessage(groupId, { text: `ℹ️ @${jidToNumber(targetJid)} is already an admin!`, mentions: [targetJid] }, { quoted: msg });
                         continue;
                     }
-
                     try {
                         await sock.groupParticipantsUpdate(groupId, [targetJid], 'promote');
-                        await sock.sendMessage(groupId, {
-                            text: `✅ @${jidToNumber(targetJid)} has been promoted to admin! 🎉`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
-                        addLog(`Promoted: ${jidToNumber(targetJid)} in ${groupId}`);
+                        await sock.sendMessage(groupId, { text: `✅ @${jidToNumber(targetJid)} promoted to admin! 🎉`, mentions: [targetJid] }, { quoted: msg });
                     } catch (e) {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ Promote failed: ${e.message}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `❌ Promote failed: ${e.message}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'demote') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    if (!botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ Bot must be admin to demote!'
-                        }, { quoted: msg });
+                    if (!await isBotAdmin(sock, groupId)) {
+                        await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin!' }, { quoted: msg });
                         continue;
                     }
-
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply or provide a number.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Target not found!' }, { quoted: msg });
                         continue;
                     }
-
                     try {
                         await sock.groupParticipantsUpdate(groupId, [targetJid], 'demote');
-                        await sock.sendMessage(groupId, {
-                            text: `✅ @${jidToNumber(targetJid)} has been demoted.`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
-                        addLog(`Demoted: ${jidToNumber(targetJid)} in ${groupId}`);
+                        await sock.sendMessage(groupId, { text: `✅ @${jidToNumber(targetJid)} demoted.`, mentions: [targetJid] }, { quoted: msg });
                     } catch (e) {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ Demote failed: ${e.message}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `❌ Demote failed: ${e.message}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'kick') {
-                    const botAdmin = await isBotAdmin(sock, groupId);
-                    if (!botAdmin) {
-                        await sock.sendMessage(groupId, {
-                            text: '⚠️ Bot must be admin to kick! Use `!!verify` to check.'
-                        }, { quoted: msg });
+                    if (!await isBotAdmin(sock, groupId)) {
+                        await sock.sendMessage(groupId, { text: '⚠️ Bot must be admin! Use `!!verify`.' }, { quoted: msg });
                         continue;
                     }
-
                     const targetJid = getTargetJid(msg, args);
                     if (!targetJid) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Target not found! Reply or provide a number.\n\nExamples:\n• `.kick` (reply)\n• `.kick 01912345678`'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Target not found! Reply or provide a number.' }, { quoted: msg });
                         continue;
                     }
-
-                    if (normalizeJid(targetJid).split('@')[0] === botJid.split('@')[0]) {
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Cannot kick the bot! Use `!!goback` instead.'
-                        }, { quoted: msg });
+                    if (targetJid.replace(/[^0-9]/g, '') === (sock.user?.id || '').replace(/[^0-9]/g, '')) {
+                        await sock.sendMessage(groupId, { text: '❌ Cannot kick the bot!' }, { quoted: msg });
                         continue;
                     }
-
-                    const targetIsAdmin = await isGroupAdmin(sock, groupId, targetJid);
-                    if (targetIsAdmin) {
-                        const senderIsOwner = await isRegisteredOwner(groupId, normalizedSender);
-                        if (!senderIsOwner) {
-                            await sock.sendMessage(groupId, {
-                                text: '❌ Cannot kick an admin! Only the registered owner can kick admins.'
-                            }, { quoted: msg });
-                            continue;
-                        }
+                    if (await isGroupAdmin(sock, groupId, targetJid) && !await isRegisteredOwner(groupId, normalizedSender)) {
+                        await sock.sendMessage(groupId, { text: '❌ Cannot kick an admin!' }, { quoted: msg });
+                        continue;
                     }
-
                     try {
                         await sock.groupParticipantsUpdate(groupId, [targetJid], 'remove');
-                        await sock.sendMessage(groupId, {
-                            text: `✅ @${jidToNumber(targetJid)} has been removed. 👢`,
-                            mentions: [targetJid]
-                        }, { quoted: msg });
-                        addLog(`Kicked: ${jidToNumber(targetJid)} from ${groupId}`);
+                        await sock.sendMessage(groupId, { text: `✅ @${jidToNumber(targetJid)} removed. 👢`, mentions: [targetJid] }, { quoted: msg });
                         await removeMute(groupId, targetJid);
                     } catch (e) {
-                        await sock.sendMessage(groupId, {
-                            text: `❌ Kick failed: ${e.message}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `❌ Kick failed: ${e.message}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'tagall') {
-                    try {
-                        const metadata = await fetchGroupMetadataSafe(sock, groupId);
-                        if (!metadata) {
-                            await sock.sendMessage(groupId, { text: '❌ Could not fetch group info.' }, { quoted: msg });
-                            continue;
-                        }
-                        const participants = metadata.participants;
-                        const tagText = args.join(' ') || '📢 Attention Everyone!';
-
-                        let text = `📢 *${tagText}*\n\n`;
-                        const mentions = [];
-
-                        for (const p of participants) {
-                            text += `• @${jidToNumber(p.id)}\n`;
-                            mentions.push(p.id);
-                        }
-
-                        text += `\n👥 Total: ${participants.length} members`;
-                        await sock.sendMessage(groupId, { text: text, mentions: mentions }, { quoted: msg });
-                        addLog(`Tag all: ${participants.length} in ${groupId}`);
-                    } catch (e) {
-                        await sock.sendMessage(groupId, { text: `❌ Tag all failed: ${e.message}` }, { quoted: msg });
+                    const metadata = await fetchGroupMetadataSafe(sock, groupId);
+                    if (!metadata) {
+                        await sock.sendMessage(groupId, { text: '❌ Could not fetch group info.' }, { quoted: msg });
+                        continue;
                     }
+                    const tagText = args.join(' ') || '📢 Attention Everyone!';
+                    let text = `📢 *${tagText}*\n\n`;
+                    const mentions = [];
+                    for (const p of metadata.participants) {
+                        text += `• @${jidToNumber(p.id)}\n`;
+                        mentions.push(p.id);
+                    }
+                    text += `\n👥 Total: ${metadata.participants.length}`;
+                    await sock.sendMessage(groupId, { text, mentions }, { quoted: msg });
                     continue;
                 }
 
@@ -1154,48 +1233,35 @@ async function startBot() {
                     if (toggle === 'on') {
                         await updateGroupSettings(groupId, { reaction: true });
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `✅ Auto Reaction *enabled*! 😁\n\nEmojis: ${(s.reactionEmojis || []).join(' ')}\nChange: \`.reaction set [emojis]\``
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `✅ Auto Reaction *enabled*!\nEmojis: ${(s.reactionEmojis || []).join(' ')}` }, { quoted: msg });
                     } else if (toggle === 'off') {
                         await updateGroupSettings(groupId, { reaction: false });
-                        await sock.sendMessage(groupId, {
-                            text: '❌ Auto Reaction *disabled*.'
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: '❌ Auto Reaction *disabled*.' }, { quoted: msg });
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📝 Usage: \`!reaction on\` or \`!reaction off\`\nCurrent: ${s.reaction ? '✅ ON' : '❌ OFF'}\nEmojis: ${(s.reactionEmojis || []).join(' ')}`
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📝 \`!reaction on/off\`\nCurrent: ${s.reaction ? '✅ ON' : '❌ OFF'}\nEmojis: ${(s.reactionEmojis || []).join(' ')}` }, { quoted: msg });
                     }
                     continue;
                 }
 
                 if (prefix === '.' && command === 'reaction') {
-                    const subCommand = args[0]?.toLowerCase();
-                    if (subCommand === 'set') {
-                        const emojis = args.slice(1).filter(e => e.trim() !== '');
+                    if (args[0]?.toLowerCase() === 'set') {
+                        const emojis = args.slice(1).filter(e => e.trim());
                         if (emojis.length === 0) {
-                            await sock.sendMessage(groupId, {
-                                text: `📝 *Usage:* \`.reaction set [emojis]\`\n\n📝 *Example:* \`.reaction set 😁 🙏 🌚 ❤️ 🔥\``
-                            }, { quoted: msg });
+                            await sock.sendMessage(groupId, { text: `📝 *Usage:* \`.reaction set [emojis]\`\nExample: \`.reaction set 😁 🙏 🌚 ❤️ 🔥\`` }, { quoted: msg });
                         } else {
                             await updateGroupSettings(groupId, { reactionEmojis: emojis });
-                            await sock.sendMessage(groupId, {
-                                text: `✅ Reaction emojis set!\n\n${emojis.join(' ')}\nTotal: ${emojis.length} emojis`
-                            }, { quoted: msg });
+                            await sock.sendMessage(groupId, { text: `✅ Emojis set! ${emojis.join(' ')}` }, { quoted: msg });
                         }
                     } else {
                         const s = await getGroupSettings(groupId);
-                        await sock.sendMessage(groupId, {
-                            text: `📋 *Auto Reaction Settings*\n\n• Status: ${s.reaction ? '✅ ON' : '❌ OFF'}\n• Emojis: ${(s.reactionEmojis || []).join(' ')}\n\nCommands:\n• \`!reaction on/off\`\n• \`.reaction set [emojis]\``
-                        }, { quoted: msg });
+                        await sock.sendMessage(groupId, { text: `📋 Reaction: ${s.reaction ? '✅ ON' : '❌ OFF'}\nEmojis: ${(s.reactionEmojis || []).join(' ')}` }, { quoted: msg });
                     }
                     continue;
                 }
 
-            } catch (msgError) {
-                addLog(`Message error: ${msgError.message}`);
+            } catch (e) {
+                addLog(`Message error: ${e.message}`);
             }
         }
     });
@@ -1205,16 +1271,14 @@ async function startBot() {
             const db = await readDb(MUTES_DB);
             let changed = false;
             const now = Date.now();
-
             for (const groupId of Object.keys(db)) {
                 for (const userJid of Object.keys(db[groupId])) {
                     if (now >= db[groupId][userJid]) {
                         delete db[groupId][userJid];
                         changed = true;
-                        addLog(`Mute expired: ${jidToNumber(userJid)} in ${groupId}`);
                         try {
                             await sock.sendMessage(groupId, {
-                                text: `🔊 @${jidToNumber(userJid)}'s mute has expired. They can now send messages. ✅`,
+                                text: `🔊 @${jidToNumber(userJid)}'s mute has expired. ✅`,
                                 mentions: [userJid]
                             });
                         } catch (e) {}
@@ -1225,12 +1289,11 @@ async function startBot() {
                     changed = true;
                 }
             }
-
             if (changed) await writeDb(MUTES_DB, db);
         } catch (e) {}
     }, 30000);
 
-    addLog('All handlers ready. Xyron Rose Manager is operational.');
+    addLog('All handlers ready. Bot is operational.');
 }
 
 startBot().catch(err => {
